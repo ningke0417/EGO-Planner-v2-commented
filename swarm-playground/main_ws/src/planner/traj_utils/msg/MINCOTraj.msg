@@ -1,3 +1,4 @@
+#发“能重建 MINCO 轨迹的最小必要参数”
 int16 drone_id
 int32 traj_id
 time start_time

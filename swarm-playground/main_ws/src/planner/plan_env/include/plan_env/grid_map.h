@@ -30,6 +30,9 @@
 
 using namespace std;
 
+// 当前主线实现的是“跟随无人机移动的局部环形占据栅格”。
+// depth/cloud 回调只负责喂数据，真正的地图融合主流程在 grid_map.cpp 里完成。
+
 // constant parameters
 
 struct MappingParameters
@@ -37,6 +40,8 @@ struct MappingParameters
   bool have_initialized_ = false;
 
   /* map properties */
+  // local_update_range3d_/3i_ 定义了局部地图窗口的半边长。
+  // ring buffer 的实际尺寸约为 2 * local_update_range。
   Eigen::Vector3d local_update_range3d_;
   Eigen::Vector3i local_update_range3i_;
   double resolution_, resolution_inv_;
@@ -61,6 +66,7 @@ struct MappingParameters
   int skip_pixel_;
 
   /* raycasting */
+  // p_* 是概率形式；prob_*_log 等是在运行时预先转换好的 log-odds。
   double p_hit_, p_miss_, p_min_, p_max_, p_occ_;                                           // occupancy probability
   double prob_hit_log_, prob_miss_log_, clamp_min_log_, clamp_max_log_, min_occupancy_log_; // logit of occupancy probability
   double min_ray_length_;                                                                   // range of doing raycasting
@@ -74,6 +80,7 @@ struct MappingParameters
 
 struct MappingData
 {
+  // 当前局部窗口在“全局 voxel 索引空间”中的位置，以及 ring buffer 的回绕原点。
   Eigen::Vector3i center_last3i_;
   // Eigen::Vector3d ringbuffer_origin3d_;
   Eigen::Vector3i ringbuffer_origin3i_;
@@ -92,7 +99,8 @@ struct MappingData
   Eigen::Vector3i ringbuffer_inf_upbound3i_;
   Eigen::Vector3i ringbuffer_inf_size3i_;
 
-  // main map data, occupancy of each voxel
+  // 原始占据图与膨胀占据图。
+  // occupancy_buffer_inflate_ 不是简单 bool，而是“附近障碍数量 + 本格是否为障碍”的计数型缓冲区。
 
   std::vector<double> occupancy_buffer_;
   std::vector<uint16_t> occupancy_buffer_inflate_;
@@ -107,7 +115,7 @@ struct MappingData
 
   cv::Mat depth_image_, last_depth_image_;
 
-  // flags of map state
+  // 当前是否有新观测待融合、是否拿到过第一帧深度/odom 等状态标记。
 
   bool occ_need_update_, local_updated_;
   bool has_first_depth_;
@@ -118,12 +126,12 @@ struct MappingData
   bool flag_depth_odom_timeout_;
   bool flag_have_ever_received_depth_;
 
-  // depth image projected point cloud
+  // 将深度图投影到世界系之后的采样点集合。
 
   vector<Eigen::Vector3d> proj_points_;
   int proj_points_cnt_;
 
-  // flag buffers for speeding up raycasting
+  // 一次 update 内部的缓存与去重标记，避免对同一 voxel 重复统计。
 
   vector<short> count_hit_, count_hit_and_miss_;
   vector<char> flag_traverse_, flag_rayend_;
@@ -141,7 +149,9 @@ public:
   GridMap() {}
   ~GridMap() {}
 
+  // 初始化参数、订阅器、定时器以及 ring buffer 大小。
   void initMap(ros::NodeHandle &nh);
+  // 查询原始占据与膨胀占据。路径搜索主要使用膨胀占据结果。
   inline int getOccupancy(Eigen::Vector3d pos);
   inline int getInflateOccupancy(Eigen::Vector3d pos);
   inline double getResolution();
@@ -162,6 +172,8 @@ private:
     INVALID_IDX = -10000
   };
 
+  // 世界坐标 <-> 全局 voxel 索引 <-> 当前 ring buffer 数组地址 的转换。
+  // “global idx” 的原点固定在世界原点，不会随着局部地图窗口移动。
   inline Eigen::Vector3d globalIdx2Pos(const Eigen::Vector3i &id);  // 1.69ns
   inline Eigen::Vector3i pos2GlobalIdx(const Eigen::Vector3d &pos); // 0.13ns
   inline int globalIdx2BufIdx(const Eigen::Vector3i &id);           // 2.2ns
@@ -176,7 +188,10 @@ private:
   void publishMap();
   void publishMapInflate();
 
-  // get depth image and camera pose
+  // 三种输入入口：
+  // 1) depth + pose
+  // 2) depth + odom
+  // 3) cloud + odom
   void depthPoseCallback(const sensor_msgs::ImageConstPtr &img,
                          const geometry_msgs::PoseStampedConstPtr &pose);
   void extrinsicCallback(const nav_msgs::OdometryConstPtr &odom);
@@ -184,14 +199,14 @@ private:
   void cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img);
   void odomCallback(const nav_msgs::OdometryConstPtr &odom);
 
-  // update occupancy by raycasting
+  // 定时器驱动的主流程：检查输入 -> 移动局部窗口 -> 深度投影 -> raycast -> 膨胀/发布。
   void updateOccupancyCallback(const ros::TimerEvent & /*event*/);
   void visCallback(const ros::TimerEvent & /*event*/);
   void fadingCallback(const ros::TimerEvent & /*event*/);
 
   void clearBuffer(char casein, int bound);
 
-  // main update process
+  // 主更新链路中的关键步骤。
   void moveRingBuffer();
   void projectDepthImage();
   void raycastProcess();
@@ -240,6 +255,7 @@ inline int GridMap::setCacheOccupancy(Eigen::Vector3d pos, int occ)
   if (occ != 1 && occ != 0)
     return INVALID_IDX;
 
+  // 先把一次 update 里的 hit/miss 统计缓存起来，稍后统一做 log-odds 融合。
   Eigen::Vector3i id = pos2GlobalIdx(pos);
   int idx_ctns = globalIdx2BufIdx(id);
 
@@ -259,6 +275,7 @@ inline int GridMap::setCacheOccupancy(Eigen::Vector3d pos, int occ)
 inline void GridMap::changeInfBuf(const bool dir, const int inf_buf_idx, const Eigen::Vector3i global_idx)
 {
   int inf_grid = mp_.inf_grid_;
+  // 中心格用一个大偏置标记“该格本身是障碍物”，周围邻域再做计数式加减。
   if (dir)
     md_.occupancy_buffer_inflate_[inf_buf_idx] += GRID_MAP_OBS_FLAG;
   else
@@ -317,6 +334,8 @@ inline void GridMap::changeInfBuf(const bool dir, const int inf_buf_idx, const E
 
 inline int GridMap::globalIdx2BufIdx(const Eigen::Vector3i &id)
 {
+  // 将全局 voxel 索引映射到当前 ring buffer 内部数组下标。
+  // 因为窗口在移动，这里必须通过 origin + 取模实现回绕。
   int x_buffer = (id(0) - md_.ringbuffer_origin3i_(0)) % md_.ringbuffer_size3i_(0);
   int y_buffer = (id(1) - md_.ringbuffer_origin3i_(1)) % md_.ringbuffer_size3i_(1);
   int z_buffer = (id(2) - md_.ringbuffer_origin3i_(2)) % md_.ringbuffer_size3i_(2);
@@ -332,6 +351,7 @@ inline int GridMap::globalIdx2BufIdx(const Eigen::Vector3i &id)
 
 inline int GridMap::globalIdx2InfBufIdx(const Eigen::Vector3i &id)
 {
+  // 与 globalIdx2BufIdx 类似，只是作用在“膨胀后地图”的 ring buffer 上。
   int x_buffer = (id(0) - md_.ringbuffer_inf_origin3i_(0)) % md_.ringbuffer_inf_size3i_(0);
   int y_buffer = (id(1) - md_.ringbuffer_inf_origin3i_(1)) % md_.ringbuffer_inf_size3i_(1);
   int z_buffer = (id(2) - md_.ringbuffer_inf_origin3i_(2)) % md_.ringbuffer_inf_size3i_(2);
@@ -347,7 +367,7 @@ inline int GridMap::globalIdx2InfBufIdx(const Eigen::Vector3i &id)
 
 inline Eigen::Vector3i GridMap::BufIdx2GlobalIdx(size_t address)
 {
-
+  // 反向映射：把当前数组地址还原成局部窗口中的全局 voxel 索引。
   const int ringbuffer_xysize = md_.ringbuffer_size3i_(0) * md_.ringbuffer_size3i_(1);
   int zid_in_buffer = address / ringbuffer_xysize;
   address %= ringbuffer_xysize;
@@ -369,7 +389,7 @@ inline Eigen::Vector3i GridMap::BufIdx2GlobalIdx(size_t address)
 
 inline Eigen::Vector3i GridMap::infBufIdx2GlobalIdx(size_t address)
 {
-
+  // 反向映射：膨胀地图数组地址 -> 全局 voxel 索引。
   const int ringbuffer_xysize = md_.ringbuffer_inf_size3i_(0) * md_.ringbuffer_inf_size3i_(1);
   int zid_in_buffer = address / ringbuffer_xysize;
   address %= ringbuffer_xysize;
@@ -391,6 +411,7 @@ inline Eigen::Vector3i GridMap::infBufIdx2GlobalIdx(size_t address)
 
 inline int GridMap::getOccupancy(Eigen::Vector3d pos)
 {
+  // 这里只查询“当前局部窗口”内的原始占据状态。
   if (!isInBuf(pos))
     return 0;
 
@@ -402,6 +423,7 @@ inline int GridMap::getOccupancy(Eigen::Vector3d pos)
 
 inline int GridMap::getInflateOccupancy(Eigen::Vector3d pos)
 {
+  // 路径搜索通常查询膨胀后的占据，等价于带安全半径的碰撞检测。
   if (!isInInfBuf(pos))
     return 0;
 
@@ -413,6 +435,7 @@ inline int GridMap::getInflateOccupancy(Eigen::Vector3d pos)
 
 inline bool GridMap::isInBuf(const Eigen::Vector3d &pos)
 {
+  // 判断是否落在当前局部窗口内；不在窗口内的点当前就视为不可直接查询。
   if (pos(0) < md_.ringbuffer_lowbound3d_(0) || pos(1) < md_.ringbuffer_lowbound3d_(1) || pos(2) < md_.ringbuffer_lowbound3d_(2))
   {
     return false;
@@ -439,6 +462,7 @@ inline bool GridMap::isInBuf(const Eigen::Vector3i &idx)
 
 inline bool GridMap::isInInfBuf(const Eigen::Vector3d &pos)
 {
+  // 膨胀窗口比原始窗口更大一圈，因为需要给障碍物留出安全半径。
   if (pos(0) < md_.ringbuffer_inf_lowbound3d_(0) || pos(1) < md_.ringbuffer_inf_lowbound3d_(1) || pos(2) < md_.ringbuffer_inf_lowbound3d_(2))
   {
     return false;
@@ -465,11 +489,13 @@ inline bool GridMap::isInInfBuf(const Eigen::Vector3i &idx)
 
 inline Eigen::Vector3d GridMap::globalIdx2Pos(const Eigen::Vector3i &id) // t ~ 0us
 {
+  // 返回体素中心点坐标。
   return Eigen::Vector3d((id(0) + 0.5) * mp_.resolution_, (id(1) + 0.5) * mp_.resolution_, (id(2) + 0.5) * mp_.resolution_);
 }
 
 inline Eigen::Vector3i GridMap::pos2GlobalIdx(const Eigen::Vector3d &pos)
 {
+  // 世界坐标转体素索引，直接以世界原点为参考离散化。
   return (pos * mp_.resolution_inv_).array().floor().cast<int>(); // more than twice faster than std::floor()
 }
 

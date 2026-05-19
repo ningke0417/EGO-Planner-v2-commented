@@ -41,13 +41,13 @@ namespace ego_planner
     /* ---------- flag ---------- */
     enum FSM_EXEC_STATE
     {
-      INIT,
-      WAIT_TARGET,
-      GEN_NEW_TRAJ,
-      REPLAN_TRAJ,
-      EXEC_TRAJ,
-      EMERGENCY_STOP,
-      SEQUENTIAL_START
+      INIT,//等 odom
+      WAIT_TARGET,//等目标点和触发信号
+      GEN_NEW_TRAJ,//停住后，如果 fail_safe 开启，就从静止状态重新规划一条新轨迹
+      REPLAN_TRAJ,//沿当前飞行过程做局部重规划
+      EXEC_TRAJ,//正常执行当前局部轨迹
+      EMERGENCY_STOP,//紧急停车
+      SEQUENTIAL_START//多机按编号顺序启动，生成第一条局部轨迹
     };
     enum TARGET_TYPE
     {

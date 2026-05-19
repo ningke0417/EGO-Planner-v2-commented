@@ -1,0 +1,39 @@
+# Editor and local tooling
+.vscode/
+.idea/
+.agents/
+.codex
+.codex/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+logs/
+**/logs/
+
+# ROS / catkin build artifacts
+build/
+devel/
+install/
+**/build/
+**/devel/
+**/install/
+.catkin_tools/
+
+# CMake artifacts
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Test results
+test_results/
+**/test_results/

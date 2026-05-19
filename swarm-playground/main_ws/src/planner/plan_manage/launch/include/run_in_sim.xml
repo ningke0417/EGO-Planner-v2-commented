@@ -1,4 +1,4 @@
-<launch>
+<launch><!--单架无人机的标准装配模板”-->
     <!-- size of map, change the size inflate x, y, z according to your application -->
     <arg name="drone_id" default="0"/>
     <arg name="map_size_x"/>

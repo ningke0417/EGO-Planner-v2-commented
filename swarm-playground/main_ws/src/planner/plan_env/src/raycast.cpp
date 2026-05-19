@@ -4,21 +4,21 @@
 #include <plan_env/raycast.h>
 
 int signum(int x) {
-  return x == 0 ? 0 : x < 0 ? -1 : 1;
+  return x == 0 ? 0 : x < 0 ? -1 : 1;//如果输入是 0 返回 0，小于 0 返回 -1，大于 0 返回 1
 }
 
 double mod(double value, double modulus) {
-  return fmod(fmod(value, modulus) + modulus, modulus);
+  return fmod(fmod(value, modulus) + modulus, modulus);//无论 value 是正是负，都把结果规范到 [0, modulus) 这个区间里
 }
-
-double intbound(double s, double ds) {
+//从坐标 s 沿方向 ds 前进，第一次碰到整数网格线要走多远。
+double intbound(double s, double ds) {//求最小的正数 t，使得 s + t * ds 恰好变成一个整数。s：当前坐标，ds：沿该方向前进的步长/方向分量
   // Find the smallest positive t such that s+t*ds is an integer.
   if (ds < 0) {
     return intbound(-s, -ds);
   } else {
-    s = mod(s, 1);
+    s = mod(s, 1);//把 s 映射到 [0, 1) 区间，也就是只保留它相对于当前整数格的小数部分
     // problem is now s+t*ds = 1
-    return (1 - s) / ds;
+    return (1 - s) / ds;//s + t * ds = 1，t = (1 - s) / ds
   }
 }
 
@@ -224,7 +224,7 @@ double intbound(double s, double ds) {
 //     }
 //   }
 // }
-
+//输入射线起点和终点，并把后续体素遍历所需的所有内部状态一次性初始化好
 bool RayCaster::setInput(const Eigen::Vector3d& start,
                          const Eigen::Vector3d& end /* , const Eigen::Vector3d& min,
                          const Eigen::Vector3d& max */) {
@@ -233,14 +233,14 @@ bool RayCaster::setInput(const Eigen::Vector3d& start,
   // max_ = max;
   // min_ = min;
 
-  x_ = (int)std::floor(start_.x());
+  x_ = (int)std::floor(start_.x());//计算起点所在的 voxel 整数坐标，向下取整
   y_ = (int)std::floor(start_.y());
   z_ = (int)std::floor(start_.z());
-  endX_ = (int)std::floor(end_.x());
+  endX_ = (int)std::floor(end_.x());//计算终点所在的 voxel 整数坐标
   endY_ = (int)std::floor(end_.y());
   endZ_ = (int)std::floor(end_.z());
   direction_ = (end_ - start_);
-  maxDist_ = direction_.squaredNorm();
+  maxDist_ = direction_.squaredNorm();//从起点到终点的距离平方
 
   // Break out direction vector.
   dx_ = endX_ - x_;
@@ -248,17 +248,17 @@ bool RayCaster::setInput(const Eigen::Vector3d& start,
   dz_ = endZ_ - z_;
 
   // Direction to increment x,y,z when stepping.
-  stepX_ = (int)signum((int)dx_);
+  stepX_ = (int)signum((int)dx_);//射线在每个轴上的前进方向，+1：往正方向走，-1：往负方向走，0：该方向不动
   stepY_ = (int)signum((int)dy_);
   stepZ_ = (int)signum((int)dz_);
 
   // See description above. The initial values depend on the fractional
   // part of the origin.
-  tMaxX_ = intbound(start_.x(), dx_);
+  tMaxX_ = intbound(start_.x(), dx_);//计算沿每个轴，从起点到“下一条整数网格线”所需的参数距离。
   tMaxY_ = intbound(start_.y(), dy_);
   tMaxZ_ = intbound(start_.z(), dz_);
 
-  // The change in t when taking a step (always positive).
+  // The change in t when taking a step (always positive).计算在每个方向上，跨过一个体素边界时参数 t 的增量。
   tDeltaX_ = ((double)stepX_) / dx_;
   tDeltaY_ = ((double)stepY_) / dy_;
   tDeltaZ_ = ((double)stepZ_) / dz_;
@@ -268,12 +268,13 @@ bool RayCaster::setInput(const Eigen::Vector3d& start,
   step_num_ = 0;
 
   // Avoids an infinite loop.
+  ////如果三个方向的步进全都是 0，说明：起点 voxel 和终点 voxel 在三个方向上都一样即射线没有跨越任何格子或者说，起点和终点落在同一个 voxel 中
   if (stepX_ == 0 && stepY_ == 0 && stepZ_ == 0)
     return false;
   else
     return true;
 }
-
+//输出当前体素，然后看射线下一步最先撞到哪一面网格边界，就沿那个方向进入下一个体素
 bool RayCaster::step(Eigen::Vector3d& ray_pt) {
   // if (x_ >= min_.x() && x_ < max_.x() && y_ >= min_.y() && y_ < max_.y() &&
   // z_ >= min_.z() && z_ <
@@ -285,7 +286,7 @@ bool RayCaster::step(Eigen::Vector3d& ray_pt) {
   // dist_ = (Eigen::Vector3d(x_, y_, z_) - start_).squaredNorm();
 
   if (x_ == endX_ && y_ == endY_ && z_ == endZ_) {
-    return false;
+    return false;//如果已经到终点，就返回 false
   }
 
   // if (dist_ > maxDist_)
@@ -293,16 +294,16 @@ bool RayCaster::step(Eigen::Vector3d& ray_pt) {
   //   return false;
   // }
 
-  // tMaxX stores the t-value at which we cross a cube boundary along the
-  // X axis, and similarly for Y and Z. Therefore, choosing the least tMax
+  // tMaxX stores the t-value at which we cross a cube boundary along the，tMaxX_：射线碰到下一条 x 方向体素边界时的参数值
+  // X axis, and similarly for Y and Z. Therefore, choosing the least tMax，谁最小，说明射线下一步最先穿过哪个方向的边界。于是当前 voxel 就沿那个方向走到下一个 voxel
   // chooses the closest cube boundary. Only the first case of the four
   // has been commented in detail.
   if (tMaxX_ < tMaxY_) {
     if (tMaxX_ < tMaxZ_) {
       // Update which cube we are now in.
-      x_ += stepX_;
+      x_ += stepX_;//既然最先穿过的是 x 方向边界，那么就沿 x 方向进入相邻 voxel。如果 stepX_ = 1，就进入右边那个格子，如果 stepX_ = -1，就进入左边那个格子
       // Adjust tMaxX to the next X-oriented boundary crossing.
-      tMaxX_ += tDeltaX_;
+      tMaxX_ += tDeltaX_;//更新 tMaxX_，使它指向“下一条 x 边界”的 crossing time
     } else {
       z_ += stepZ_;
       tMaxZ_ += tDeltaZ_;

@@ -598,7 +598,7 @@ void GridMap::clearAndInflateLocalMap()
     }
 
   // inflate occupied voxels to compensate robot size
-
+//下面一句可能有bug,见github Issues
   int inf_step = ceil(mp_.obstacles_inflation_ - 0.001 / mp_.resolution_) + 1; // plus 1 for safety since we use "getLessInflateOccupancy()"
   if ( inf_step > 4 )
   {
