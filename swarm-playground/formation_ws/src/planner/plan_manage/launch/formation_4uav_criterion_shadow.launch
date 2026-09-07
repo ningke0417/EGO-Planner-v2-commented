@@ -1,0 +1,419 @@
+<launch>
+    <!-- Controlled four-UAV criterion experiment. The StarConvex node itself
+         remains shadow-only. Optional feedback is isolated in the explicitly
+         enabled one-way auto-split bridge below. -->
+    <arg name="rviz" default="true"/>
+    <arg name="max_vel" default="0.3"/>
+    <arg name="map_size_x" default="20.0"/>
+    <arg name="map_size_y" default="14.0"/>
+    <arg name="map_size_z" default="3.0"/>
+    <arg name="odom_topic" default="visual_slam/odom"/>
+    <arg name="start_x" default="-6.0"/>
+    <arg name="goal_x" default="6.0"/>
+    <arg name="pillar_x" default="0.0"/>
+    <arg name="pillar_y" default="0.0"/>
+    <arg name="pillar_radius" default="1.0"/>
+    <arg name="map_shape" default="pillar"/>
+    <arg name="criterion_obstacle_model" default="pillar"/>
+    <arg name="obstacle_cloud_topic" default="/map_generator/global_cloud"/>
+    <arg name="voxel_resolution" default="0.10"/>
+    <arg name="starconvex_frontier_floor" default="0.50"/>
+    <arg name="starconvex_frontier_roof" default="1.50"/>
+    <arg name="starconvex_delta_floor" default="-0.50"/>
+    <arg name="starconvex_delta_roof" default="1.50"/>
+    <arg name="criterion_publish_rate" default="1.0"/>
+    <arg name="merge_direction_min_speed" default="0.05"/>
+    <arg name="rear_split_propagation_enabled" default="true"/>
+    <arg name="rear_split_propagation_factor" default="1.3"/>
+    <arg name="rear_split_propagation_min_time" default="0.3"/>
+    <arg name="rear_split_propagation_max_time" default="6.0"/>
+    <arg name="auto_merge_enabled" default="true"/>
+    <arg name="auto_merge_after_wall_margin" default="1.5"/>
+    <arg name="auto_merge_ready_persistence" default="1.0"/>
+    <arg name="auto_merge_candidate_min_score" default="0.35"/>
+    <arg name="post_merge_intact_persistence" default="1.0"/>
+    <arg name="staged_merge_enabled" default="true"/>
+    <arg name="row_merge_after_wall_margin" default="0.5"/>
+    <arg name="row_merge_ready_persistence" default="0.5"/>
+    <arg name="row_merge_score_threshold" default="0.70"/>
+    <arg name="row_merge_formation_weight_scale" default="0.25"/>
+    <arg name="autonomous_edge_merge_enabled" default="true"/>
+    <arg name="edge_soft_reconnect_score_threshold" default="0.50"/>
+    <arg name="edge_merge_score_threshold" default="0.70"/>
+    <arg name="edge_merge_ready_persistence" default="0.5"/>
+    <arg name="edge_full_merge_ready_persistence" default="0.5"/>
+    <arg name="edge_merge_formation_weight_scale" default="0.15"/>
+    <arg name="edge_merge_max_distance" default="4.0"/>
+    <arg name="edge_full_merge_max_distance" default="2.5"/>
+    <arg name="edge_merge_use_wall_gate" default="false"/>
+    <arg name="global_intact_soft_reconnect_enabled" default="false"/>
+    <arg name="global_intact_soft_reconnect_persistence" default="0.4"/>
+    <arg name="edge_cut_score_threshold" default="0.34"/>
+    <arg name="edge_hard_cut_score_threshold" default="0.20"/>
+    <arg name="edge_cut_ready_persistence" default="1.2"/>
+    <arg name="edge_cut_stall_progress" default="0.10"/>
+    <arg name="edge_cut_fallback_persistence" default="3.0"/>
+    <arg name="split_min_merge_delay" default="0.8"/>
+    <arg name="wall_size_x" default="0.5"/>
+    <arg name="wall_size_y" default="5.0"/>
+    <!-- Manual backend experiment only. This remains independent of the
+         StarConvex shadow recommendation unless enable_auto_split is true. -->
+    <arg name="manual_split" default="false"/>
+    <arg name="enable_auto_split" default="false"/>
+    <arg name="safety_distance" default="0.2"/>
+    <arg name="split_side_guidance_enabled" default="false"/>
+    <arg name="split_side_guidance_weight" default="600.0"/>
+    <arg name="split_side_guidance_margin" default="0.35"/>
+    <arg name="split_subgroup_formation_weight_scale" default="1.0"/>
+    <arg name="split_progress_sync_weight_scale" default="0.0"/>
+    <arg name="split_progress_sync_deadband" default="0.6"/>
+    <arg name="subgroup_route_intent_feedback_enabled" default="false"/>
+    <arg name="subgroup_route_intent_weight" default="80.0"/>
+    <arg name="subgroup_route_intent_corridor_half_width" default="0.25"/>
+    <arg name="subgroup_route_intent_show_debug_text" default="false"/>
+    <arg name="formation_weight" default="200"/>
+    <arg name="use_wall_collision_guard" default="$(eval arg('map_shape') == 'wall')"/>
+    <arg name="wall_guard_check_horizon" default="3.0"/>
+
+    <include file="$(find swarm_bridge)/launch/bridge_udp.launch">
+        <arg name="drone_id" value="999"/>
+        <arg name="broadcast_ip" value="127.0.0.255"/>
+    </include>
+
+    <node if="$(eval arg('map_shape') == 'pillar')"
+          pkg="map_generator" type="fixed_pillar_map" name="fixed_pillar_map"
+          output="screen" required="true">
+        <remap from="global_cloud" to="/map_generator/global_cloud"/>
+        <param name="pillar_x" value="$(arg pillar_x)" type="double"/>
+        <param name="pillar_y" value="$(arg pillar_y)" type="double"/>
+        <param name="pillar_radius" value="$(arg pillar_radius)" type="double"/>
+        <param name="resolution" value="0.1" type="double"/>
+        <param name="height" value="3.0" type="double"/>
+    </node>
+
+    <node if="$(eval arg('map_shape') == 'wall')"
+          pkg="map_generator" type="fixed_wall_map" name="fixed_wall_map"
+          output="screen" required="true">
+        <remap from="global_cloud" to="/map_generator/global_cloud"/>
+        <param name="wall_x" value="$(arg pillar_x)" type="double"/>
+        <param name="wall_y" value="$(arg pillar_y)" type="double"/>
+        <param name="size_x" value="$(arg wall_size_x)" type="double"/>
+        <param name="size_y" value="$(arg wall_size_y)" type="double"/>
+        <param name="safety_distance" value="$(arg safety_distance)" type="double"/>
+        <param name="resolution" value="0.1" type="double"/>
+        <param name="height" value="3.0" type="double"/>
+    </node>
+
+    <node if="$(eval arg('map_shape') == 'pillar' or arg('criterion_obstacle_model') == 'pointcloud')"
+          pkg="ego_planner" type="starconvex_shadow_4uav_node"
+          name="starconvex_shadow_4uav" output="screen" required="true">
+        <param name="odom_topic_suffix" value="$(arg odom_topic)"/>
+        <param name="obstacle_model" value="$(arg criterion_obstacle_model)"/>
+        <param name="obstacle_cloud_topic" value="$(arg obstacle_cloud_topic)"/>
+        <param name="voxel_resolution" value="$(arg voxel_resolution)" type="double"/>
+        <param name="frontier_floor" value="$(arg starconvex_frontier_floor)" type="double"/>
+        <param name="frontier_roof" value="$(arg starconvex_frontier_roof)" type="double"/>
+        <param name="delta_floor" value="$(arg starconvex_delta_floor)" type="double"/>
+        <param name="delta_roof" value="$(arg starconvex_delta_roof)" type="double"/>
+        <param name="pillar_x" value="$(arg pillar_x)" type="double"/>
+        <param name="pillar_y" value="$(arg pillar_y)" type="double"/>
+        <param name="pillar_radius" value="$(arg pillar_radius)" type="double"/>
+        <param name="obstacle_inflation" value="$(arg safety_distance)" type="double"/>
+        <param name="split_threshold" value="0.34" type="double"/>
+        <param name="hard_split_threshold" value="0.20" type="double"/>
+        <param name="merge_threshold" value="0.70" type="double"/>
+        <param name="merge_direction_min_speed" value="$(arg merge_direction_min_speed)" type="double"/>
+        <param name="persistence_distance" value="0.05" type="double"/>
+        <param name="rear_split_propagation_enabled" value="$(arg rear_split_propagation_enabled)" type="bool"/>
+        <param name="rear_split_propagation_factor" value="$(arg rear_split_propagation_factor)" type="double"/>
+        <param name="rear_split_propagation_speed" value="$(arg max_vel)" type="double"/>
+        <param name="rear_split_propagation_min_time" value="$(arg rear_split_propagation_min_time)" type="double"/>
+        <param name="rear_split_propagation_max_time" value="$(arg rear_split_propagation_max_time)" type="double"/>
+        <param name="publish_rate" value="$(arg criterion_publish_rate)" type="double"/>
+        <param name="sample_xy" value="0.25" type="double"/>
+        <param name="sample_z" value="0.10" type="double"/>
+    </node>
+
+    <!-- Optional bridge. It accepts the shadow state SPLIT, then allows merge
+         after the swarm center has passed the wall and the criterion is either
+         INTACT or no longer severely low-score. -->
+    <node if="$(arg enable_auto_split)"
+          pkg="ego_planner" type="formation_auto_split_bridge_4uav_node"
+          name="formation_auto_split_bridge_4uav" output="screen" required="true">
+        <param name="auto_merge_enabled" value="$(arg auto_merge_enabled)" type="bool"/>
+        <param name="merge_wall_x" value="$(arg pillar_x)" type="double"/>
+        <param name="merge_wall_half_x" value="$(eval 0.5 * float(arg('wall_size_x')))" type="double"/>
+        <param name="merge_after_wall_margin" value="$(arg auto_merge_after_wall_margin)" type="double"/>
+        <param name="merge_ready_persistence" value="$(arg auto_merge_ready_persistence)" type="double"/>
+        <param name="merge_candidate_min_score" value="$(arg auto_merge_candidate_min_score)" type="double"/>
+        <param name="post_merge_intact_persistence" value="$(arg post_merge_intact_persistence)" type="double"/>
+        <param name="staged_merge_enabled" value="$(arg staged_merge_enabled)" type="bool"/>
+        <param name="row_merge_after_wall_margin" value="$(arg row_merge_after_wall_margin)" type="double"/>
+        <param name="row_merge_ready_persistence" value="$(arg row_merge_ready_persistence)" type="double"/>
+        <param name="row_merge_score_threshold" value="$(arg row_merge_score_threshold)" type="double"/>
+        <param name="split_formation_weight_scale" value="$(arg split_subgroup_formation_weight_scale)" type="double"/>
+        <param name="split_progress_sync_weight_scale" value="$(arg split_progress_sync_weight_scale)" type="double"/>
+        <param name="row_merge_formation_weight_scale" value="$(arg row_merge_formation_weight_scale)" type="double"/>
+        <param name="autonomous_edge_merge_enabled" value="$(arg autonomous_edge_merge_enabled)" type="bool"/>
+        <param name="edge_soft_reconnect_score_threshold" value="$(arg edge_soft_reconnect_score_threshold)" type="double"/>
+        <param name="edge_merge_score_threshold" value="$(arg edge_merge_score_threshold)" type="double"/>
+        <param name="edge_merge_ready_persistence" value="$(arg edge_merge_ready_persistence)" type="double"/>
+        <param name="edge_full_merge_ready_persistence" value="$(arg edge_full_merge_ready_persistence)" type="double"/>
+        <param name="edge_merge_formation_weight_scale" value="$(arg edge_merge_formation_weight_scale)" type="double"/>
+        <param name="edge_merge_max_distance" value="$(arg edge_merge_max_distance)" type="double"/>
+        <param name="edge_full_merge_max_distance" value="$(arg edge_full_merge_max_distance)" type="double"/>
+        <param name="edge_merge_use_wall_gate" value="$(arg edge_merge_use_wall_gate)" type="bool"/>
+        <param name="global_intact_soft_reconnect_enabled" value="$(arg global_intact_soft_reconnect_enabled)" type="bool"/>
+        <param name="global_intact_soft_reconnect_persistence" value="$(arg global_intact_soft_reconnect_persistence)" type="double"/>
+        <param name="edge_cut_score_threshold" value="$(arg edge_cut_score_threshold)" type="double"/>
+        <param name="edge_hard_cut_score_threshold" value="$(arg edge_hard_cut_score_threshold)" type="double"/>
+        <param name="edge_cut_ready_persistence" value="$(arg edge_cut_ready_persistence)" type="double"/>
+        <param name="edge_cut_stall_progress" value="$(arg edge_cut_stall_progress)" type="double"/>
+        <param name="edge_cut_fallback_persistence" value="$(arg edge_cut_fallback_persistence)" type="double"/>
+        <param name="split_min_merge_delay" value="$(arg split_min_merge_delay)" type="double"/>
+    </node>
+
+    <node pkg="ego_planner" type="formation_backend_visualizer_4uav_node"
+          name="formation_backend_visualizer_4uav" output="screen">
+        <param name="odom_topic_suffix" value="$(arg odom_topic)"/>
+        <param name="obstacle_shape" value="$(arg map_shape)"/>
+        <param name="pillar_x" value="$(arg pillar_x)" type="double"/>
+        <param name="pillar_y" value="$(arg pillar_y)" type="double"/>
+        <param name="pillar_radius" value="$(arg pillar_radius)" type="double"/>
+        <param name="wall_x" value="$(arg pillar_x)" type="double"/>
+        <param name="wall_y" value="$(arg pillar_y)" type="double"/>
+        <param name="wall_size_x" value="$(arg wall_size_x)" type="double"/>
+        <param name="wall_size_y" value="$(arg wall_size_y)" type="double"/>
+        <param name="safety_distance" value="$(arg safety_distance)" type="double"/>
+    </node>
+
+    <!-- Distributed-compatible route-intent emulation.  In shadow mode it is
+         diagnostic only; when feedback_enabled is true its locally certified
+         direction is passed to EGO-Planner as a soft optimization cost. -->
+    <node pkg="ego_planner" type="subgroup_route_intent_4uav_node"
+          name="subgroup_route_intent_4uav" output="screen">
+        <param name="odom_topic_suffix" value="$(arg odom_topic)"/>
+        <param name="obstacle_cloud_topic" value="$(arg obstacle_cloud_topic)"/>
+        <param name="voxel_resolution" value="$(arg voxel_resolution)" type="double"/>
+        <param name="obstacle_inflation" value="$(arg safety_distance)" type="double"/>
+        <param name="goal_x" value="$(arg goal_x)" type="double"/>
+        <param name="goal_y" value="0.0" type="double"/>
+        <param name="publish_rate" value="5.0" type="double"/>
+        <param name="ray_count" value="72" type="int"/>
+        <param name="sensor_range" value="5.0" type="double"/>
+        <param name="guide_lookahead" value="2.0" type="double"/>
+        <param name="guide_clearance" value="0.15" type="double"/>
+        <param name="feedback_enabled" value="$(arg subgroup_route_intent_feedback_enabled)" type="bool"/>
+        <param name="show_debug_text" value="$(arg subgroup_route_intent_show_debug_text)" type="bool"/>
+        <param name="lock_release_distance" value="3.0" type="double"/>
+        <param name="lock_release_persistence" value="1.0" type="double"/>
+        <param name="lock_min_duration" value="2.0" type="double"/>
+        <!-- Normally change at most 15 degrees per 5 Hz update.  The limiter
+             is bypassed only when no candidate inside that step has at least
+             one metre of raycast-certified usable free space. -->
+        <param name="locked_max_angle_step" value="0.261799" type="double"/>
+        <param name="angle_limit_min_usable_length" value="1.0" type="double"/>
+        <param name="release_fade_duration" value="1.5" type="double"/>
+    </node>
+
+    <!-- One-metre 2x2 square in the horizontal plane.  The vehicle travels
+         along +x.  Numbering follows the whiteboard sketch:
+         front row {0,1}, rear row {2,3}. -->
+    <include file="$(find ego_planner)/launch/run_in_sim.launch">
+        <arg name="drone_id" value="0"/>
+        <arg name="init_x" value="$(eval float(arg('start_x')) + 0.5)"/>
+        <arg name="init_y" value="-0.5"/>
+        <arg name="init_z" value="1.5"/>
+        <arg name="map_size_x" value="$(arg map_size_x)"/>
+        <arg name="map_size_y" value="$(arg map_size_y)"/>
+        <arg name="map_size_z" value="$(arg map_size_z)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+        <arg name="obstacles_inflation" value="$(arg safety_distance)"/>
+        <arg name="obstacle_clearance" value="$(arg safety_distance)"/>
+        <arg name="use_wall_collision_guard" value="$(arg use_wall_collision_guard)"/>
+        <arg name="wall_x" value="$(arg pillar_x)"/>
+        <arg name="wall_y" value="$(arg pillar_y)"/>
+        <arg name="wall_size_x" value="$(arg wall_size_x)"/>
+        <arg name="wall_size_y" value="$(arg wall_size_y)"/>
+        <arg name="wall_safety_distance" value="$(arg safety_distance)"/>
+        <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
+        <arg name="manual_formation_split" value="$(arg manual_split)"/>
+        <arg name="split_side_guidance_enabled" value="$(arg split_side_guidance_enabled)"/>
+        <arg name="split_side_guidance_weight" value="$(arg split_side_guidance_weight)"/>
+        <arg name="split_side_guidance_margin" value="$(arg split_side_guidance_margin)"/>
+        <arg name="split_side_guidance_center_y" value="$(arg pillar_y)"/>
+        <arg name="split_subgroup_formation_weight_scale" value="$(arg split_subgroup_formation_weight_scale)"/>
+        <arg name="split_progress_sync_weight_scale" value="$(arg split_progress_sync_weight_scale)"/>
+        <arg name="split_progress_sync_deadband" value="$(arg split_progress_sync_deadband)"/>
+        <arg name="subgroup_route_intent_feedback_enabled" value="$(arg subgroup_route_intent_feedback_enabled)"/>
+        <arg name="subgroup_route_intent_weight" value="$(arg subgroup_route_intent_weight)"/>
+        <arg name="subgroup_route_intent_corridor_half_width" value="$(arg subgroup_route_intent_corridor_half_width)"/>
+        <arg name="formation_weight" value="$(arg formation_weight)"/>
+        <arg name="formation_num" value="4"/>
+        <arg name="formation_start_x" value="$(arg start_x)"/>
+        <arg name="formation_start_y" value="0.0"/>
+        <arg name="formation_start_z" value="1.5"/>
+        <arg name="formation_drone0_x" value="0.5"/>
+        <arg name="formation_drone0_y" value="-0.5"/>
+        <arg name="formation_drone1_x" value="0.5"/>
+        <arg name="formation_drone1_y" value="0.5"/>
+        <arg name="formation_drone2_x" value="-0.5"/>
+        <arg name="formation_drone2_y" value="-0.5"/>
+        <arg name="formation_drone3_x" value="-0.5"/>
+        <arg name="formation_drone3_y" value="0.5"/>
+        <arg name="point_num" value="1"/>
+        <arg name="point0_x" value="$(arg goal_x)"/>
+        <arg name="point0_y" value="0.0"/>
+        <arg name="point0_z" value="1.5"/>
+    </include>
+
+    <include file="$(find ego_planner)/launch/run_in_sim.launch">
+        <arg name="drone_id" value="1"/>
+        <arg name="init_x" value="$(eval float(arg('start_x')) + 0.5)"/>
+        <arg name="init_y" value="0.5"/>
+        <arg name="init_z" value="1.5"/>
+        <arg name="map_size_x" value="$(arg map_size_x)"/>
+        <arg name="map_size_y" value="$(arg map_size_y)"/>
+        <arg name="map_size_z" value="$(arg map_size_z)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+        <arg name="obstacles_inflation" value="$(arg safety_distance)"/>
+        <arg name="obstacle_clearance" value="$(arg safety_distance)"/>
+        <arg name="use_wall_collision_guard" value="$(arg use_wall_collision_guard)"/>
+        <arg name="wall_x" value="$(arg pillar_x)"/>
+        <arg name="wall_y" value="$(arg pillar_y)"/>
+        <arg name="wall_size_x" value="$(arg wall_size_x)"/>
+        <arg name="wall_size_y" value="$(arg wall_size_y)"/>
+        <arg name="wall_safety_distance" value="$(arg safety_distance)"/>
+        <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
+        <arg name="manual_formation_split" value="$(arg manual_split)"/>
+        <arg name="split_side_guidance_enabled" value="$(arg split_side_guidance_enabled)"/>
+        <arg name="split_side_guidance_weight" value="$(arg split_side_guidance_weight)"/>
+        <arg name="split_side_guidance_margin" value="$(arg split_side_guidance_margin)"/>
+        <arg name="split_side_guidance_center_y" value="$(arg pillar_y)"/>
+        <arg name="split_subgroup_formation_weight_scale" value="$(arg split_subgroup_formation_weight_scale)"/>
+        <arg name="split_progress_sync_weight_scale" value="$(arg split_progress_sync_weight_scale)"/>
+        <arg name="split_progress_sync_deadband" value="$(arg split_progress_sync_deadband)"/>
+        <arg name="subgroup_route_intent_feedback_enabled" value="$(arg subgroup_route_intent_feedback_enabled)"/>
+        <arg name="subgroup_route_intent_weight" value="$(arg subgroup_route_intent_weight)"/>
+        <arg name="subgroup_route_intent_corridor_half_width" value="$(arg subgroup_route_intent_corridor_half_width)"/>
+        <arg name="formation_weight" value="$(arg formation_weight)"/>
+        <arg name="formation_num" value="4"/>
+        <arg name="formation_start_x" value="$(arg start_x)"/>
+        <arg name="formation_start_y" value="0.0"/>
+        <arg name="formation_start_z" value="1.5"/>
+        <arg name="formation_drone0_x" value="0.5"/>
+        <arg name="formation_drone0_y" value="-0.5"/>
+        <arg name="formation_drone1_x" value="0.5"/>
+        <arg name="formation_drone1_y" value="0.5"/>
+        <arg name="formation_drone2_x" value="-0.5"/>
+        <arg name="formation_drone2_y" value="-0.5"/>
+        <arg name="formation_drone3_x" value="-0.5"/>
+        <arg name="formation_drone3_y" value="0.5"/>
+        <arg name="point_num" value="1"/>
+        <arg name="point0_x" value="$(arg goal_x)"/>
+        <arg name="point0_y" value="0.0"/>
+        <arg name="point0_z" value="1.5"/>
+    </include>
+
+    <include file="$(find ego_planner)/launch/run_in_sim.launch">
+        <arg name="drone_id" value="2"/>
+        <arg name="init_x" value="$(eval float(arg('start_x')) - 0.5)"/>
+        <arg name="init_y" value="-0.5"/>
+        <arg name="init_z" value="1.5"/>
+        <arg name="map_size_x" value="$(arg map_size_x)"/>
+        <arg name="map_size_y" value="$(arg map_size_y)"/>
+        <arg name="map_size_z" value="$(arg map_size_z)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+        <arg name="obstacles_inflation" value="$(arg safety_distance)"/>
+        <arg name="obstacle_clearance" value="$(arg safety_distance)"/>
+        <arg name="use_wall_collision_guard" value="$(arg use_wall_collision_guard)"/>
+        <arg name="wall_x" value="$(arg pillar_x)"/>
+        <arg name="wall_y" value="$(arg pillar_y)"/>
+        <arg name="wall_size_x" value="$(arg wall_size_x)"/>
+        <arg name="wall_size_y" value="$(arg wall_size_y)"/>
+        <arg name="wall_safety_distance" value="$(arg safety_distance)"/>
+        <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
+        <arg name="manual_formation_split" value="$(arg manual_split)"/>
+        <arg name="split_side_guidance_enabled" value="$(arg split_side_guidance_enabled)"/>
+        <arg name="split_side_guidance_weight" value="$(arg split_side_guidance_weight)"/>
+        <arg name="split_side_guidance_margin" value="$(arg split_side_guidance_margin)"/>
+        <arg name="split_side_guidance_center_y" value="$(arg pillar_y)"/>
+        <arg name="split_subgroup_formation_weight_scale" value="$(arg split_subgroup_formation_weight_scale)"/>
+        <arg name="split_progress_sync_weight_scale" value="$(arg split_progress_sync_weight_scale)"/>
+        <arg name="split_progress_sync_deadband" value="$(arg split_progress_sync_deadband)"/>
+        <arg name="subgroup_route_intent_feedback_enabled" value="$(arg subgroup_route_intent_feedback_enabled)"/>
+        <arg name="subgroup_route_intent_weight" value="$(arg subgroup_route_intent_weight)"/>
+        <arg name="subgroup_route_intent_corridor_half_width" value="$(arg subgroup_route_intent_corridor_half_width)"/>
+        <arg name="formation_weight" value="$(arg formation_weight)"/>
+        <arg name="formation_num" value="4"/>
+        <arg name="formation_start_x" value="$(arg start_x)"/>
+        <arg name="formation_start_y" value="0.0"/>
+        <arg name="formation_start_z" value="1.5"/>
+        <arg name="formation_drone0_x" value="0.5"/>
+        <arg name="formation_drone0_y" value="-0.5"/>
+        <arg name="formation_drone1_x" value="0.5"/>
+        <arg name="formation_drone1_y" value="0.5"/>
+        <arg name="formation_drone2_x" value="-0.5"/>
+        <arg name="formation_drone2_y" value="-0.5"/>
+        <arg name="formation_drone3_x" value="-0.5"/>
+        <arg name="formation_drone3_y" value="0.5"/>
+        <arg name="point_num" value="1"/>
+        <arg name="point0_x" value="$(arg goal_x)"/>
+        <arg name="point0_y" value="0.0"/>
+        <arg name="point0_z" value="1.5"/>
+    </include>
+
+    <include file="$(find ego_planner)/launch/run_in_sim.launch">
+        <arg name="drone_id" value="3"/>
+        <arg name="init_x" value="$(eval float(arg('start_x')) - 0.5)"/>
+        <arg name="init_y" value="0.5"/>
+        <arg name="init_z" value="1.5"/>
+        <arg name="map_size_x" value="$(arg map_size_x)"/>
+        <arg name="map_size_y" value="$(arg map_size_y)"/>
+        <arg name="map_size_z" value="$(arg map_size_z)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+        <arg name="obstacles_inflation" value="$(arg safety_distance)"/>
+        <arg name="obstacle_clearance" value="$(arg safety_distance)"/>
+        <arg name="use_wall_collision_guard" value="$(arg use_wall_collision_guard)"/>
+        <arg name="wall_x" value="$(arg pillar_x)"/>
+        <arg name="wall_y" value="$(arg pillar_y)"/>
+        <arg name="wall_size_x" value="$(arg wall_size_x)"/>
+        <arg name="wall_size_y" value="$(arg wall_size_y)"/>
+        <arg name="wall_safety_distance" value="$(arg safety_distance)"/>
+        <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
+        <arg name="manual_formation_split" value="$(arg manual_split)"/>
+        <arg name="split_side_guidance_enabled" value="$(arg split_side_guidance_enabled)"/>
+        <arg name="split_side_guidance_weight" value="$(arg split_side_guidance_weight)"/>
+        <arg name="split_side_guidance_margin" value="$(arg split_side_guidance_margin)"/>
+        <arg name="split_side_guidance_center_y" value="$(arg pillar_y)"/>
+        <arg name="split_subgroup_formation_weight_scale" value="$(arg split_subgroup_formation_weight_scale)"/>
+        <arg name="split_progress_sync_weight_scale" value="$(arg split_progress_sync_weight_scale)"/>
+        <arg name="split_progress_sync_deadband" value="$(arg split_progress_sync_deadband)"/>
+        <arg name="subgroup_route_intent_feedback_enabled" value="$(arg subgroup_route_intent_feedback_enabled)"/>
+        <arg name="subgroup_route_intent_weight" value="$(arg subgroup_route_intent_weight)"/>
+        <arg name="subgroup_route_intent_corridor_half_width" value="$(arg subgroup_route_intent_corridor_half_width)"/>
+        <arg name="formation_weight" value="$(arg formation_weight)"/>
+        <arg name="formation_num" value="4"/>
+        <arg name="formation_start_x" value="$(arg start_x)"/>
+        <arg name="formation_start_y" value="0.0"/>
+        <arg name="formation_start_z" value="1.5"/>
+        <arg name="formation_drone0_x" value="0.5"/>
+        <arg name="formation_drone0_y" value="-0.5"/>
+        <arg name="formation_drone1_x" value="0.5"/>
+        <arg name="formation_drone1_y" value="0.5"/>
+        <arg name="formation_drone2_x" value="-0.5"/>
+        <arg name="formation_drone2_y" value="-0.5"/>
+        <arg name="formation_drone3_x" value="-0.5"/>
+        <arg name="formation_drone3_y" value="0.5"/>
+        <arg name="point_num" value="1"/>
+        <arg name="point0_x" value="$(arg goal_x)"/>
+        <arg name="point0_y" value="0.0"/>
+        <arg name="point0_z" value="1.5"/>
+    </include>
+
+    <include if="$(arg rviz)" file="$(find ego_planner)/launch/rviz.launch"/>
+</launch>

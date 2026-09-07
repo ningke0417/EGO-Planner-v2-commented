@@ -22,20 +22,43 @@ namespace ego_planner
     nh.param("fsm/flight_type", target_type_, -1);
     nh.param("fsm/thresh_replan_time", replan_thresh_, -1.0);
     nh.param("fsm/thresh_no_replan_meter", no_replan_thresh_, -1.0);
+    nh.param("fsm/arrival_position_tolerance", arrival_position_tolerance_, 0.30);
+    nh.param("fsm/arrival_speed_tolerance", arrival_speed_tolerance_, 0.15);
     nh.param("fsm/planning_horizon", planning_horizen_, -1.0);
     nh.param("fsm/emergency_time", emergency_time_, 1.0);
     nh.param("fsm/realworld_experiment", flag_realworld_experiment_, false);
     nh.param("fsm/fail_safe", enable_fail_safe_, true);
+    nh.param("formation/manual_split", manual_formation_split_, false);
+    nh.param("formation/general_dynamic_topology_enabled",
+             general_dynamic_topology_enabled_, false);
+    nh.param("formation/subgroup_route_intent_feedback_enabled",
+             subgroup_route_intent_feedback_enabled_, false);
+    nh.param("formation/subgroup_route_intent_timeout",
+             subgroup_route_intent_timeout_, 1.0);
+    nh.param("formation/subgroup_route_intent_replan_angle",
+             subgroup_route_intent_replan_angle_, 0.261799);
+    nh.param("formation/subgroup_route_intent_replan_gain_step",
+             subgroup_route_intent_replan_gain_step_, 0.20);
+    nh.param("formation/subgroup_route_intent_replan_interval",
+             subgroup_route_intent_replan_interval_, 0.5);
 
     have_trigger_ = !flag_realworld_experiment_;
 
-    int formation_num = -1;
-    nh.param("formation/num", formation_num, -1);
-    if (formation_num < planner_manager_->pp_.drone_id + 1)
+    nh.param("formation/num", form_num_, -1);
+    if (form_num_ < planner_manager_->pp_.drone_id + 1)
     {
       ROS_ERROR("formation_num is smaller than the drone number, illegal!");
       return;
     }
+    if (manual_formation_split_ && form_num_ != 4 &&
+        !general_dynamic_topology_enabled_)
+    {
+      ROS_ERROR("formation/manual_split for non-four-UAV formations requires "
+                "formation/general_dynamic_topology_enabled=true; keeping the "
+                "formation intact.");
+      manual_formation_split_ = false;
+    }
+    planner_manager_->setManualFormationSplit(manual_formation_split_);
     std::vector<double> pos;
     nh.getParam("formation/drone" + to_string(planner_manager_->pp_.drone_id), pos);
     formation_pos_ << pos[0], pos[1], pos[2];
@@ -69,6 +92,25 @@ namespace ego_planner
 
     odom_sub_ = nh.subscribe("odom_world", 1, &EGOReplanFSM::odometryCallback, this);
     mandatory_stop_sub_ = nh.subscribe("mandatory_stop", 1, &EGOReplanFSM::mandatoryStopCallback, this);
+    manual_split_sub_ = nh.subscribe<std_msgs::Bool>(
+        "/formation_backend/manual_split", 1,
+        &EGOReplanFSM::manualFormationSplitCallback, this);
+    dynamic_topology_sub_ = nh.subscribe<std_msgs::String>(
+        "/formation_backend/topology_components", 1,
+        &EGOReplanFSM::dynamicTopologyCallback, this);
+    topology_command_sub_ = nh.subscribe<FormationTopologyCommand>(
+        "/formation_backend/topology_command", 10,
+        &EGOReplanFSM::formationTopologyCommandCallback, this);
+    split_formation_scale_sub_ = nh.subscribe<std_msgs::Float64>(
+        "/formation_backend/split_formation_scale", 1,
+        &EGOReplanFSM::splitFormationScaleCallback, this);
+    split_progress_sync_scale_sub_ = nh.subscribe<std_msgs::Float64>(
+        "/formation_backend/split_progress_sync_scale", 1,
+        &EGOReplanFSM::splitProgressSyncScaleCallback, this);
+    if (subgroup_route_intent_feedback_enabled_)
+      subgroup_route_intent_sub_ = nh.subscribe<std_msgs::Float64MultiArray>(
+          "/subgroup_route_intent_4uav/intents", 1,
+          &EGOReplanFSM::subgroupRouteIntentCallback, this);
 
     /* Use MINCO trajectory to minimize the message size in wireless communication */
     broadcast_ploytraj_pub_ = nh.advertise<traj_utils::MINCOTraj>("planning/broadcast_traj_send", 10);
@@ -81,6 +123,29 @@ namespace ego_planner
     data_disp_pub_ = nh.advertise<traj_utils::DataDisp>("planning/data_display", 100);
     heartbeat_pub_ = nh.advertise<std_msgs::Empty>("planning/heartbeat", 10);
     ground_height_pub_ = nh.advertise<std_msgs::Float64>("/ground_height_measurement", 10);
+    formation_group_pub_ = nh.advertise<std_msgs::String>(
+        "/formation_backend/drone_" +
+            std::to_string(planner_manager_->pp_.drone_id) + "_group",
+        1, true);
+    topology_ack_pub_ = nh.advertise<FormationTopologyAck>(
+        "/formation_backend/topology_ack", 10, false);
+    subgroup_route_intent_status_pub_ = nh.advertise<std_msgs::String>(
+        "/formation_backend/drone_" +
+            std::to_string(planner_manager_->pp_.drone_id) +
+            "_route_intent",
+        1, true);
+    safety_status_pub_ = nh.advertise<std_msgs::String>(
+        "/formation_safety/drone_" +
+            std::to_string(planner_manager_->pp_.drone_id) + "/status",
+        5, false);
+    first_wall_violation_pub_ = nh.advertise<std_msgs::String>(
+        "/formation_safety/drone_" +
+            std::to_string(planner_manager_->pp_.drone_id) +
+            "/first_wall_violation",
+        1, true);
+    publishFormationGroupState();
+    publishSubgroupRouteIntentState(
+        subgroup_route_intent_feedback_enabled_ ? "WAITING" : "DISABLED");
 
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
     {
@@ -112,11 +177,514 @@ namespace ego_planner
       cout << "Wrong target_type_ value! target_type_=" << target_type_ << endl;
   }
 
+  void EGOReplanFSM::publishFormationGroupState()
+  {
+    std_msgs::String message;
+    if (!manual_formation_split_)
+      message.data = "INTACT";
+    else if (dynamic_topology_active_)
+      message.data = "C" + std::to_string(dynamicGroupForDrone(planner_manager_->pp_.drone_id));
+    else
+      message.data = planner_manager_->pp_.drone_id < 2 ? "G0" : "G1";
+    formation_group_pub_.publish(message);
+  }
+
+  int EGOReplanFSM::dynamicGroupForDrone(const int drone_id) const
+  {
+    if (dynamic_topology_active_ &&
+        drone_id >= 0 &&
+        drone_id < static_cast<int>(dynamic_formation_groups_.size()))
+      return dynamic_formation_groups_[drone_id];
+    return drone_id < form_num_ / 2 ? 0 : 1;
+  }
+
+  bool EGOReplanFSM::dynamicTopologyMatchesLegacySplit() const
+  {
+    if (!dynamic_topology_active_ ||
+        static_cast<int>(dynamic_formation_groups_.size()) < form_num_ ||
+        form_num_ != 4)
+      return true;
+    return dynamic_formation_groups_[0] == dynamic_formation_groups_[1] &&
+           dynamic_formation_groups_[2] == dynamic_formation_groups_[3] &&
+           dynamic_formation_groups_[0] != dynamic_formation_groups_[2];
+  }
+
+  void EGOReplanFSM::dynamicTopologyCallback(const std_msgs::String::ConstPtr &msg)
+  {
+    const std::string &text = msg->data;
+    if (text == "INTACT" || text.empty())
+    {
+      if (!dynamic_topology_active_)
+      {
+        publishFormationGroupState();
+        return;
+      }
+      dynamic_topology_active_ = false;
+      dynamic_formation_groups_.clear();
+      planner_manager_->setDynamicFormationGroups(dynamic_formation_groups_);
+      publishFormationGroupState();
+      return;
+    }
+
+    std::vector<int> groups;
+    if (!parseDynamicTopology(text, &groups))
+    {
+      ROS_WARN_THROTTLE(1.0, "[FORMATION_BACKEND] invalid dynamic topology: %s",
+                        text.c_str());
+      return;
+    }
+
+    if (dynamic_topology_active_ && groups == dynamic_formation_groups_)
+    {
+      publishFormationGroupState();
+      return;
+    }
+
+    dynamic_formation_groups_ = groups;
+    dynamic_topology_active_ = true;
+    if (!manual_formation_split_)
+    {
+      manual_formation_split_ = true;
+      planner_manager_->setManualFormationSplit(true);
+    }
+    planner_manager_->setDynamicFormationGroups(dynamic_formation_groups_);
+    publishFormationGroupState();
+
+    if (!dynamicTopologyMatchesLegacySplit() && subgroup_route_intent_active_)
+    {
+      subgroup_route_intent_active_ = false;
+      subgroup_route_intent_gain_ = 0.0;
+      planner_manager_->setSubgroupRouteIntent(
+          false, odom_pos_, Eigen::Vector3d::UnitX(), 0.0);
+      publishSubgroupRouteIntentState("DISABLED_DYNAMIC_TOPOLOGY");
+    }
+
+    ROS_WARN("[FORMATION_BACKEND] drone %d uses legacy dynamic topology %s as C%d",
+             planner_manager_->pp_.drone_id, canonicalTopology(groups).c_str(),
+             dynamicGroupForDrone(planner_manager_->pp_.drone_id));
+
+    if (have_target_ && (exec_state_ == EXEC_TRAJ || exec_state_ == REPLAN_TRAJ ||
+                         exec_state_ == GEN_NEW_TRAJ))
+      changeFSMExecState(REPLAN_TRAJ, "DYNAMIC_TOPOLOGY");
+  }
+
+  bool EGOReplanFSM::parseDynamicTopology(const std::string &text,
+                                           std::vector<int> *groups) const
+  {
+    groups->assign(form_num_, -1);
+    std::vector<bool> seen(form_num_, false);
+    int component = 0;
+    bool in_component = false;
+    int value = -1;
+    bool reading_number = false;
+    for (const char ch : text)
+    {
+      if (ch == '{')
+      {
+        in_component = true;
+        value = -1;
+        reading_number = false;
+      }
+      else if (ch >= '0' && ch <= '9' && in_component)
+      {
+        if (!reading_number)
+        {
+          value = 0;
+          reading_number = true;
+        }
+        value = value * 10 + (ch - '0');
+      }
+      else
+      {
+        if (reading_number)
+        {
+          if (value < 0 || value >= form_num_ || seen[value])
+            return false;
+          (*groups)[value] = component;
+          seen[value] = true;
+        }
+        value = -1;
+        reading_number = false;
+        if (ch == '}' && in_component)
+        {
+          in_component = false;
+          ++component;
+        }
+      }
+    }
+    if (reading_number)
+    {
+      if (value < 0 || value >= form_num_ || seen[value])
+        return false;
+      (*groups)[value] = component;
+      seen[value] = true;
+    }
+
+    if (component <= 0 ||
+        !std::all_of(groups->begin(), groups->end(),
+                     [](int group) { return group >= 0; }))
+      return false;
+
+    // Component labels are presentation details.  Normalize them by first UAV
+    // occurrence so semantically identical strings compare equal.
+    std::vector<int> old_labels;
+    for (int &group : *groups)
+    {
+      const auto found = std::find(old_labels.begin(), old_labels.end(), group);
+      if (found == old_labels.end())
+      {
+        old_labels.push_back(group);
+        group = static_cast<int>(old_labels.size()) - 1;
+      }
+      else
+      {
+        group = static_cast<int>(std::distance(old_labels.begin(), found));
+      }
+    }
+    return true;
+  }
+
+  std::string EGOReplanFSM::canonicalTopology(
+      const std::vector<int> &groups) const
+  {
+    if (groups.empty()) return "INTACT";
+    const int component_count =
+        *std::max_element(groups.begin(), groups.end()) + 1;
+    std::ostringstream text;
+    for (int component = 0; component < component_count; ++component)
+    {
+      if (component > 0) text << "|";
+      text << "{";
+      bool first = true;
+      for (int id = 0; id < static_cast<int>(groups.size()); ++id)
+      {
+        if (groups[id] != component) continue;
+        if (!first) text << ",";
+        text << id;
+        first = false;
+      }
+      text << "}";
+    }
+    return text.str();
+  }
+
+  void EGOReplanFSM::publishTopologyAck()
+  {
+    if (topology_epoch_ == 0) return;
+    FormationTopologyAck ack;
+    ack.header.stamp = ros::Time::now();
+    ack.epoch = topology_epoch_;
+    ack.drone_id = planner_manager_->pp_.drone_id;
+    ack.mode = topology_mode_;
+    ack.components = topology_components_;
+    ack.group_id = dynamic_topology_active_
+                       ? dynamicGroupForDrone(planner_manager_->pp_.drone_id)
+                       : -1;
+    ack.formation_scale = std::max(0.0, split_formation_scale_);
+    ack.progress_sync_scale = std::max(0.0, split_progress_sync_scale_);
+    topology_ack_pub_.publish(ack);
+  }
+
+  void EGOReplanFSM::logEffectiveTopology(const std::string &reason) const
+  {
+    std::ostringstream edges;
+    std::vector<std::array<int, 2>> formation_edges;
+    if (form_num_ == 6 && general_dynamic_topology_enabled_)
+      formation_edges = {{{0, 1}}, {{1, 2}}, {{3, 4}}, {{4, 5}},
+                         {{0, 3}}, {{1, 4}}, {{2, 5}}};
+    else
+      formation_edges = {{{0, 1}}, {{1, 3}}, {{3, 2}}, {{2, 0}}};
+    for (std::size_t edge = 0; edge < formation_edges.size(); ++edge)
+    {
+      if (edge > 0) edges << " ";
+      const int first = formation_edges[edge][0];
+      const int second = formation_edges[edge][1];
+      const bool connected = !dynamic_topology_active_ ||
+          (first < static_cast<int>(dynamic_formation_groups_.size()) &&
+           second < static_cast<int>(dynamic_formation_groups_.size()) &&
+           dynamic_formation_groups_[first] == dynamic_formation_groups_[second]);
+      edges << first << "-" << second << ":" << (connected ? "on" : "cut");
+    }
+    ROS_WARN_STREAM("[TOPOLOGY_APPLIED] drone="
+                    << planner_manager_->pp_.drone_id
+                    << " epoch=" << topology_epoch_
+                    << " mode="
+                    << (topology_mode_ == FormationTopologyCommand::SPLIT
+                            ? "SPLIT" : "INTACT")
+                    << " components=" << topology_components_
+                    << " formation_scale=" << split_formation_scale_
+                    << " progress_sync_scale=" << split_progress_sync_scale_
+                    << " edges=[" << edges.str() << "] reason=" << reason);
+  }
+
+  void EGOReplanFSM::formationTopologyCommandCallback(
+      const FormationTopologyCommand::ConstPtr &msg)
+  {
+    if (msg->mode != FormationTopologyCommand::INTACT &&
+        msg->mode != FormationTopologyCommand::SPLIT)
+    {
+      ROS_ERROR("[FORMATION_BACKEND] Reject epoch %lu with invalid mode %u",
+                static_cast<unsigned long>(msg->epoch), msg->mode);
+      return;
+    }
+    if (msg->epoch < topology_epoch_)
+    {
+      ROS_WARN_THROTTLE(1.0,
+                        "[FORMATION_BACKEND] Ignore stale topology epoch %lu; current=%lu",
+                        static_cast<unsigned long>(msg->epoch),
+                        static_cast<unsigned long>(topology_epoch_));
+      return;
+    }
+
+    std::vector<int> groups;
+    std::string components = "INTACT";
+    if (msg->mode == FormationTopologyCommand::SPLIT)
+    {
+      if ((form_num_ != 4 && !general_dynamic_topology_enabled_) ||
+          !parseDynamicTopology(msg->components, &groups))
+      {
+        ROS_ERROR("[FORMATION_BACKEND] Reject epoch %lu with invalid components '%s'",
+                  static_cast<unsigned long>(msg->epoch), msg->components.c_str());
+        return;
+      }
+      components = canonicalTopology(groups);
+    }
+
+    const double formation_scale =
+        msg->mode == FormationTopologyCommand::SPLIT
+            ? std::max(0.0, msg->formation_scale) : 0.0;
+    const double progress_scale =
+        msg->mode == FormationTopologyCommand::SPLIT
+            ? std::max(0.0, msg->progress_sync_scale) : 0.0;
+    const bool same_payload =
+        msg->mode == topology_mode_ && components == topology_components_ &&
+        std::fabs(formation_scale - split_formation_scale_) < 1e-6 &&
+        std::fabs(progress_scale - split_progress_sync_scale_) < 1e-6;
+    if (msg->epoch == topology_epoch_)
+    {
+      if (!same_payload)
+      {
+        ROS_ERROR("[FORMATION_BACKEND] Conflicting payload for topology epoch %lu",
+                  static_cast<unsigned long>(msg->epoch));
+        return;
+      }
+      publishFormationGroupState();
+      publishTopologyAck();
+      return;
+    }
+
+    const bool topology_changed =
+        msg->mode != topology_mode_ || components != topology_components_;
+    const bool scale_changed =
+        std::fabs(formation_scale - split_formation_scale_) >= 1e-6 ||
+        std::fabs(progress_scale - split_progress_sync_scale_) >= 1e-6;
+
+    topology_epoch_ = msg->epoch;
+    topology_mode_ = msg->mode;
+    topology_components_ = components;
+    manual_formation_split_ = msg->mode == FormationTopologyCommand::SPLIT;
+    dynamic_topology_active_ = manual_formation_split_;
+    dynamic_formation_groups_ = groups;
+    split_formation_scale_ = formation_scale;
+    split_progress_sync_scale_ = progress_scale;
+
+    planner_manager_->setManualFormationSplit(manual_formation_split_);
+    planner_manager_->setDynamicFormationGroups(dynamic_formation_groups_);
+    planner_manager_->setSplitSubgroupFormationWeightScale(split_formation_scale_);
+    planner_manager_->setSplitProgressSyncWeightScale(split_progress_sync_scale_);
+
+    if ((!manual_formation_split_ || !dynamicTopologyMatchesLegacySplit()) &&
+        subgroup_route_intent_active_)
+    {
+      subgroup_route_intent_active_ = false;
+      subgroup_route_intent_gain_ = 0.0;
+      planner_manager_->setSubgroupRouteIntent(
+          false, odom_pos_, Eigen::Vector3d::UnitX(), 0.0);
+      publishSubgroupRouteIntentState(
+          manual_formation_split_ ? "DISABLED_DYNAMIC_TOPOLOGY" : "WAITING_SPLIT");
+    }
+
+    publishFormationGroupState();
+    publishTopologyAck();
+    logEffectiveTopology(msg->reason);
+
+    if ((topology_changed || scale_changed) && have_target_ &&
+        (exec_state_ == EXEC_TRAJ || exec_state_ == REPLAN_TRAJ ||
+         exec_state_ == GEN_NEW_TRAJ))
+      changeFSMExecState(REPLAN_TRAJ, "TOPOLOGY_COMMAND");
+  }
+
+  void EGOReplanFSM::manualFormationSplitCallback(const std_msgs::Bool::ConstPtr &msg)
+  {
+    if (form_num_ != 4 && !general_dynamic_topology_enabled_)
+    {
+      ROS_ERROR_THROTTLE(
+          2.0,
+          "Manual formation split for non-four-UAV formations is disabled; "
+          "set formation/general_dynamic_topology_enabled=true explicitly.");
+      return;
+    }
+    if (manual_formation_split_ == msg->data)
+    {
+      publishFormationGroupState();
+      return;
+    }
+
+    manual_formation_split_ = msg->data;
+    planner_manager_->setManualFormationSplit(manual_formation_split_);
+    if (manual_formation_split_ && dynamic_topology_active_)
+      planner_manager_->setDynamicFormationGroups(dynamic_formation_groups_);
+    if (!manual_formation_split_ && subgroup_route_intent_active_)
+    {
+      subgroup_route_intent_active_ = false;
+      subgroup_route_intent_gain_ = 0.0;
+      planner_manager_->setSubgroupRouteIntent(
+          false, odom_pos_, Eigen::Vector3d::UnitX(), 0.0);
+      publishSubgroupRouteIntentState("WAITING_SPLIT");
+    }
+    if (!manual_formation_split_)
+    {
+      dynamic_topology_active_ = false;
+      dynamic_formation_groups_.clear();
+      planner_manager_->setDynamicFormationGroups(dynamic_formation_groups_);
+    }
+    publishFormationGroupState();
+    ROS_WARN("[FORMATION_BACKEND] drone %d switched to %s",
+             planner_manager_->pp_.drone_id,
+             manual_formation_split_
+                 ? ("SPLIT/C" +
+                    std::to_string(dynamicGroupForDrone(planner_manager_->pp_.drone_id))).c_str()
+                 : "INTACT");
+
+    // Apply the new formation cost from the next optimization.  Collision
+    // avoidance remains global because swarm trajectories are not filtered.
+    if (have_target_ && (exec_state_ == EXEC_TRAJ || exec_state_ == REPLAN_TRAJ ||
+                         exec_state_ == GEN_NEW_TRAJ))
+      changeFSMExecState(REPLAN_TRAJ, "MANUAL_TOPOLOGY");
+  }
+
+  void EGOReplanFSM::splitFormationScaleCallback(const std_msgs::Float64::ConstPtr &msg)
+  {
+    const double scale = std::max(0.0, msg->data);
+    if (std::fabs(scale - split_formation_scale_) < 1e-6)
+      return;
+    split_formation_scale_ = scale;
+    planner_manager_->setSplitSubgroupFormationWeightScale(split_formation_scale_);
+    if (have_target_ && manual_formation_split_ &&
+        (exec_state_ == EXEC_TRAJ || exec_state_ == REPLAN_TRAJ ||
+         exec_state_ == GEN_NEW_TRAJ))
+      changeFSMExecState(REPLAN_TRAJ, "SPLIT_FORMATION_SCALE");
+  }
+
+  void EGOReplanFSM::splitProgressSyncScaleCallback(const std_msgs::Float64::ConstPtr &msg)
+  {
+    const double scale = std::max(0.0, msg->data);
+    if (std::fabs(scale - split_progress_sync_scale_) < 1e-6)
+      return;
+    split_progress_sync_scale_ = scale;
+    planner_manager_->setSplitProgressSyncWeightScale(split_progress_sync_scale_);
+    if (have_target_ && manual_formation_split_ &&
+        (exec_state_ == EXEC_TRAJ || exec_state_ == REPLAN_TRAJ ||
+         exec_state_ == GEN_NEW_TRAJ))
+      changeFSMExecState(REPLAN_TRAJ, "SPLIT_PROGRESS_SYNC_SCALE");
+  }
+
+  void EGOReplanFSM::publishSubgroupRouteIntentState(
+      const std::string &state)
+  {
+    std_msgs::String message;
+    message.data = state;
+    subgroup_route_intent_status_pub_.publish(message);
+  }
+
+  void EGOReplanFSM::subgroupRouteIntentCallback(
+      const std_msgs::Float64MultiArray::ConstPtr &msg)
+  {
+    // Two group records with the schema documented by the publisher:
+    // group, member0, member1, cx, cy, angle, free, usable, score,
+    // coordination_active, lock_active, locked_side, feedback_gain.  Older
+    // publishers used a Boolean in the last field, which remains compatible.
+    constexpr std::size_t stride = 13;
+    const bool per_drone_records =
+        msg->data.size() >= static_cast<std::size_t>(form_num_) * stride;
+    const std::size_t group =
+        per_drone_records
+            ? static_cast<std::size_t>(planner_manager_->pp_.drone_id)
+            : (planner_manager_->pp_.drone_id < 2 ? 0 : 1);
+    const std::size_t base = group * stride;
+    if (msg->data.size() < base + stride)
+      return;
+
+    const double gain = std::max(0.0, std::min(1.0, msg->data[base + 12]));
+    const bool active = gain > 1e-3 &&
+                        manual_formation_split_ &&
+                        subgroup_route_intent_feedback_enabled_;
+    const double angle = msg->data[base + 5];
+    const bool was_active = subgroup_route_intent_active_;
+    const double previous_gain = subgroup_route_intent_gain_;
+    const double angle_step = std::fabs(
+        std::atan2(std::sin(angle - subgroup_route_intent_angle_),
+                   std::cos(angle - subgroup_route_intent_angle_)));
+
+    subgroup_route_intent_active_ = active;
+    subgroup_route_intent_angle_ = angle;
+    subgroup_route_intent_gain_ = active ? gain : 0.0;
+    subgroup_route_intent_stamp_ = ros::Time::now();
+    const Eigen::Vector3d direction(std::cos(angle), std::sin(angle), 0.0);
+    planner_manager_->setSubgroupRouteIntent(
+        active, odom_pos_, direction, subgroup_route_intent_gain_);
+
+    if (!active)
+    {
+      if (was_active)
+      {
+        publishSubgroupRouteIntentState("RELEASED");
+        if (exec_state_ == EXEC_TRAJ)
+          changeFSMExecState(REPLAN_TRAJ, "SUBGROUP_ROUTE_RELEASED");
+      }
+      return;
+    }
+
+    const int locked_side = static_cast<int>(std::round(msg->data[base + 11]));
+    publishSubgroupRouteIntentState(
+        std::string("ACTIVE side=") + (locked_side < 0 ? "-" : "+") +
+        " angle=" + std::to_string(angle) +
+        " gain=" + std::to_string(subgroup_route_intent_gain_));
+
+    const ros::Time now = ros::Time::now();
+    const bool request_replan = !was_active ||
+                                angle_step >= subgroup_route_intent_replan_angle_ ||
+                                std::fabs(subgroup_route_intent_gain_ -
+                                          previous_gain) >=
+                                    subgroup_route_intent_replan_gain_step_;
+    if (request_replan && exec_state_ == EXEC_TRAJ &&
+        (subgroup_route_intent_last_replan_.isZero() ||
+         (now - subgroup_route_intent_last_replan_).toSec() >=
+             subgroup_route_intent_replan_interval_))
+    {
+      subgroup_route_intent_last_replan_ = now;
+      changeFSMExecState(REPLAN_TRAJ, "SUBGROUP_ROUTE_INTENT");
+    }
+  }
+
   void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
   {
     exec_timer_.stop(); // To avoid blockage
     std_msgs::Empty heartbeat_msg;
     heartbeat_pub_.publish(heartbeat_msg);
+
+    if (subgroup_route_intent_active_ &&
+        (ros::Time::now() - subgroup_route_intent_stamp_).toSec() >
+            subgroup_route_intent_timeout_)
+    {
+      subgroup_route_intent_active_ = false;
+      subgroup_route_intent_gain_ = 0.0;
+      planner_manager_->setSubgroupRouteIntent(
+          false, odom_pos_, Eigen::Vector3d::UnitX(), 0.0);
+      publishSubgroupRouteIntentState("STALE_DISABLED");
+      ROS_ERROR_THROTTLE(
+          2.0, "Subgroup route intent timed out; dynamic guidance disabled.");
+    }
 
     static int fsm_num = 0;
     fsm_num++;
@@ -206,12 +774,11 @@ namespace ego_planner
       double t_cur = ros::Time::now().toSec() - info->start_time;
       t_cur = min(info->duration, t_cur);
 
-      Eigen::Vector3d pos = info->traj.getPos(t_cur);
       bool touch_the_goal = ((local_target_pt_ - end_pt_).norm() < 1e-2);
 
       if ((target_type_ == TARGET_TYPE::PRESET_TARGET) &&
           (wpt_id_ < waypoint_num_ - 1) &&
-          (end_pt_ - pos).norm() < no_replan_thresh_)
+          (end_pt_ - odom_pos_).norm() < no_replan_thresh_)
       {
         formation_start_ = wps_[wpt_id_];
         wpt_id_++;
@@ -219,6 +786,38 @@ namespace ego_planner
       }
       else if ((t_cur > info->duration - 1e-2) && touch_the_goal) // local target close to the global target
       {
+        const double goal_error = (end_pt_ - odom_pos_).norm();
+        const bool wall_safe =
+            !planner_manager_->violatesWallCollisionGuard(odom_pos_);
+        const bool map_safe =
+            !planner_manager_->grid_map_->getInflateOccupancy(odom_pos_);
+        const bool actually_arrived =
+            goal_error <= arrival_position_tolerance_ &&
+            odom_vel_.norm() <= arrival_speed_tolerance_ && wall_safe && map_safe;
+
+        if (!actually_arrived)
+        {
+          ROS_ERROR_THROTTLE(
+              1.0,
+              "[arrival_guard] drone %d trajectory expired but vehicle has not safely arrived: goal_error=%.3f speed=%.3f map_occ=%d wall_guard=%d odom=(%.3f,%.3f,%.3f). Replan from odometry.",
+              planner_manager_->pp_.drone_id, goal_error, odom_vel_.norm(),
+              static_cast<int>(!map_safe), static_cast<int>(!wall_safe),
+              odom_pos_.x(), odom_pos_.y(), odom_pos_.z());
+          if (!wall_safe)
+          {
+            latchFirstWallViolation("arrival_guard", !map_safe, info, t_cur);
+            callEmergencyStop(odom_pos_);
+            enable_fail_safe_ = false;
+            changeFSMExecState(EMERGENCY_STOP,
+                               "SAFETY_CURRENT_WALL_GUARD");
+          }
+          else
+          {
+            changeFSMExecState(GEN_NEW_TRAJ, "ARRIVAL_GUARD_REPLAN");
+          }
+          goto force_return;
+        }
+
         have_target_ = false;
         have_trigger_ = false;
 
@@ -234,17 +833,15 @@ namespace ego_planner
         changeFSMExecState(WAIT_TARGET, "FSM");
         goto force_return;
       }
-      else if ((end_pt_ - pos).norm() < no_replan_thresh_)
+      else if ((end_pt_ - odom_pos_).norm() < no_replan_thresh_)
       {
         if (planner_manager_->grid_map_->getInflateOccupancy(end_pt_))
         {
-          have_target_ = false;
-          have_trigger_ = false;
-          ROS_ERROR("The goal is in obstacles, finish the planning.");
+          ROS_ERROR("[arrival_guard] drone %d goal is occupied; task is not complete.",
+                    planner_manager_->pp_.drone_id);
           callEmergencyStop(odom_pos_);
-
-          /* The navigation task completed */
-          changeFSMExecState(WAIT_TARGET, "FSM");
+          enable_fail_safe_ = false;
+          changeFSMExecState(EMERGENCY_STOP, "SAFETY_GOAL_OCCUPIED");
           goto force_return;
         }
         else
@@ -296,7 +893,11 @@ namespace ego_planner
     static string state_str[8] = {"INIT", "WAIT_TARGET", "GEN_NEW_TRAJ", "REPLAN_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP", "SEQUENTIAL_START"};
     int pre_s = int(exec_state_);
     exec_state_ = new_state;
-    cout << "[" + pos_call + "]: from " + state_str[pre_s] + " to " + state_str[int(new_state)] << endl;
+    if (new_state == EMERGENCY_STOP)
+      last_emergency_reason_ = pos_call;
+    cout << "[drone " << planner_manager_->pp_.drone_id << "][" << pos_call
+         << "]: from " << state_str[pre_s] << " to "
+         << state_str[int(new_state)] << endl;
   }
 
   void EGOReplanFSM::printFSMExecState()
@@ -309,7 +910,8 @@ namespace ego_planner
     // else
     //   dot_nums++;
 
-    cout << "\r[FSM]: state: " + state_str[int(exec_state_)];
+    cout << "\r[FSM][drone " << planner_manager_->pp_.drone_id
+         << "]: state: " << state_str[int(exec_state_)];
 
     // last_printed_state = exec_state_;
 
@@ -330,6 +932,10 @@ namespace ego_planner
     {
       cout << ", haven't receive traj from previous drone";
     }
+    if (exec_state_ == EMERGENCY_STOP && !last_emergency_reason_.empty())
+    {
+      cout << ", reason=" << last_emergency_reason_;
+    }
 
     cout << endl;
 
@@ -343,6 +949,74 @@ namespace ego_planner
     return std::pair<int, FSM_EXEC_STATE>(continously_called_times_, exec_state_);
   }
 
+  void EGOReplanFSM::publishSafetyStatus(
+      const int map_occupancy,
+      const bool wall_guard_violation,
+      const LocalTrajData *info,
+      const double trajectory_time)
+  {
+    const ros::Time now = ros::Time::now();
+    if (!last_safety_status_stamp_.isZero() &&
+        (now - last_safety_status_stamp_).toSec() < 0.20)
+      return;
+    last_safety_status_stamp_ = now;
+
+    static const char *state_names[] = {
+        "INIT", "WAIT_TARGET", "GEN_NEW_TRAJ", "REPLAN_TRAJ",
+        "EXEC_TRAJ", "EMERGENCY_STOP", "SEQUENTIAL_START"};
+    const int state_index = static_cast<int>(exec_state_);
+    const char *state = state_index >= 0 && state_index < 7
+                            ? state_names[state_index]
+                            : "UNKNOWN";
+    const int traj_id = info ? info->traj_id : -1;
+    const double goal_error = have_target_ ? (end_pt_ - odom_pos_).norm() : -1.0;
+
+    std_msgs::String message;
+    std::ostringstream stream;
+    stream << "drone=" << planner_manager_->pp_.drone_id
+           << " state=" << state
+           << " traj_id=" << traj_id
+           << " traj_t=" << trajectory_time
+           << " odom=(" << odom_pos_.x() << "," << odom_pos_.y() << ","
+           << odom_pos_.z() << ")"
+           << " speed=" << odom_vel_.norm()
+           << " goal_error=" << goal_error
+           << " map_occ=" << map_occupancy
+           << " wall_guard=" << static_cast<int>(wall_guard_violation)
+           << " target=" << static_cast<int>(have_target_);
+    message.data = stream.str();
+    safety_status_pub_.publish(message);
+  }
+
+  void EGOReplanFSM::latchFirstWallViolation(
+      const std::string &source,
+      const int map_occupancy,
+      const LocalTrajData *info,
+      const double trajectory_time)
+  {
+    if (first_wall_violation_latched_)
+      return;
+    first_wall_violation_latched_ = true;
+
+    std_msgs::String message;
+    std::ostringstream stream;
+    stream << "source=" << source
+           << " drone=" << planner_manager_->pp_.drone_id
+           << " stamp=" << ros::Time::now().toSec()
+           << " state=" << static_cast<int>(exec_state_)
+           << " traj_id=" << (info ? info->traj_id : -1)
+           << " traj_t=" << trajectory_time
+           << " odom=(" << odom_pos_.x() << "," << odom_pos_.y() << ","
+           << odom_pos_.z() << ")"
+           << " velocity=(" << odom_vel_.x() << "," << odom_vel_.y() << ","
+           << odom_vel_.z() << ")"
+           << " map_occ=" << map_occupancy
+           << " wall_guard=1";
+    message.data = stream.str();
+    first_wall_violation_pub_.publish(message);
+    ROS_ERROR_STREAM("[FIRST_WALL_VIOLATION] " << message.data);
+  }
+
   void EGOReplanFSM::checkCollisionCallback(const ros::TimerEvent &e)
   {
     // check ground height by the way
@@ -354,15 +1028,40 @@ namespace ego_planner
     double t_cur = ros::Time::now().toSec() - info->start_time;
     PtsChk_t pts_chk = info->pts_chk;
 
+    const int current_map_occupancy =
+        have_odom_ ? map->getInflateOccupancy(odom_pos_) : -2;
+    const bool current_wall_guard =
+        have_odom_ && planner_manager_->violatesWallCollisionGuard(odom_pos_);
+    publishSafetyStatus(current_map_occupancy, current_wall_guard, info, t_cur);
+
+    // This is a hard runtime invariant, independent of trajectory age and FSM
+    // state.  It turns a silent wall-crossing/completion into an explicit,
+    // latched failure with the map result recorded at the same odometry sample.
+    if (current_wall_guard)
+    {
+      latchFirstWallViolation("current_odometry", current_map_occupancy,
+                              info, t_cur);
+      if (exec_state_ != EMERGENCY_STOP)
+      {
+        callEmergencyStop(odom_pos_);
+        enable_fail_safe_ = false;
+        changeFSMExecState(EMERGENCY_STOP,
+                           "SAFETY_CURRENT_WALL_GUARD");
+      }
+      return;
+    }
+
     if (exec_state_ == WAIT_TARGET || info->traj_id <= 0)
       return;
 
     /* ---------- check lost of depth ---------- */
     if (map->getOdomDepthTimeout())
     {
-      ROS_ERROR("Depth Lost! EMERGENCY_STOP");
+      ROS_ERROR("[drone %d] Depth lost; entering EMERGENCY_STOP.",
+                planner_manager_->pp_.drone_id);
       enable_fail_safe_ = false;
-      changeFSMExecState(EMERGENCY_STOP, "SAFETY");
+      changeFSMExecState(EMERGENCY_STOP, "SAFETY_DEPTH_LOST");
+      return;
     }
 
     // bool close_to_the_end_of_safe_segment = (pts_chk.back().back().first - t_cur) < emergency_time_;
@@ -405,6 +1104,7 @@ namespace ego_planner
 
     /* ---------- check trajectory ---------- */
     const double CLEARANCE = 0.8 * planner_manager_->getSwarmClearance();
+    const double wall_guard_horizon = planner_manager_->getWallGuardCheckHorizon();
     auto id_ratio = info->traj.locatePieceIdxWithRatio(t_cur);
 
     // cout << "t_cur=" << t_cur << " info->duration=" << info->duration << endl;
@@ -447,6 +1147,8 @@ namespace ego_planner
     // Eigen::Vector3d p_last = pts_chk[i_start][j_start].second;
     const bool touch_the_end = ((local_target_pt_ - end_pt_).norm() < 1e-2);
     size_t i_end = touch_the_end ? pts_chk.size() : pts_chk.size() * 3 / 4;
+    Eigen::Vector3d previous_checked =
+        have_odom_ ? odom_pos_ : info->traj.getPos(std::max(0.0, t_cur));
     for (size_t i = i_start; i < i_end; ++i)
     {
       for (size_t j = j_start; j < pts_chk[i].size(); ++j)
@@ -468,7 +1170,29 @@ namespace ego_planner
         //   break;
 
         bool occ = false;
-        occ |= map->getInflateOccupancy(p);
+        std::string collision_reason;
+        if (map->getInflateOccupancy(p))
+        {
+          occ = true;
+          collision_reason = "map_inflate_occupancy";
+        }
+        const bool inside_wall_horizon =
+            wall_guard_horizon <= 0.0 || t - t_cur <= wall_guard_horizon;
+        if (inside_wall_horizon &&
+            (planner_manager_->violatesWallCollisionGuard(p) ||
+             planner_manager_->segmentViolatesWallCollisionGuard(
+                 previous_checked, p)))
+        {
+          ROS_ERROR_THROTTLE(
+              0.5,
+              "[traj_safety] Wall guard predicts segment collision for drone %d in %.2fs from=(%.3f, %.3f, %.3f) to=(%.3f, %.3f, %.3f).",
+              planner_manager_->pp_.drone_id,
+              t - t_cur,
+              previous_checked.x(), previous_checked.y(), previous_checked.z(),
+              p.x(), p.y(), p.z());
+          occ = true;
+          collision_reason = "wall_guard_segment";
+        }
 
         // cout << "p=" << p.transpose() << endl;
 
@@ -502,6 +1226,8 @@ namespace ego_planner
               ROS_WARN("swarm distance between drone %d and drone %d is %f, too close!",
                        planner_manager_->pp_.drone_id, (int)id, dist);
               occ = true;
+              collision_reason =
+                  "swarm_close_to_drone_" + std::to_string(static_cast<int>(id));
               break;
             }
           }
@@ -512,7 +1238,10 @@ namespace ego_planner
           /* Handle the collided case immediately */
           if (planFromLocalTraj()) // Make a chance
           {
-            ROS_INFO("Plan success when detect collision. %f", t / info->duration);
+            ROS_INFO("[drone %d] Plan success after predicted collision (%s). ratio=%f",
+                     planner_manager_->pp_.drone_id,
+                     collision_reason.c_str(),
+                     t / info->duration);
             changeFSMExecState(EXEC_TRAJ, "SAFETY");
             return;
           }
@@ -520,18 +1249,26 @@ namespace ego_planner
           {
             if (t - t_cur < emergency_time_) // 0.8s of emergency time
             {
-              ROS_WARN("Emergency stop! time=%f", t - t_cur);
-              changeFSMExecState(EMERGENCY_STOP, "SAFETY");
+              ROS_WARN("[drone %d] Emergency stop because %s is %.3fs ahead at p=(%.3f, %.3f, %.3f).",
+                       planner_manager_->pp_.drone_id,
+                       collision_reason.c_str(),
+                       t - t_cur,
+                       p.x(), p.y(), p.z());
+              changeFSMExecState(EMERGENCY_STOP, "SAFETY_COLLISION_NEAR");
             }
             else
             {
-              ROS_WARN("current traj in collision, replan.");
+              ROS_WARN("[drone %d] Current trajectory predicts %s in %.3fs; replan.",
+                       planner_manager_->pp_.drone_id,
+                       collision_reason.c_str(),
+                       t - t_cur);
               changeFSMExecState(REPLAN_TRAJ, "SAFETY");
             }
             return;
           }
           break;
         }
+        previous_checked = p;
       }
       j_start = 0;
     }
@@ -539,8 +1276,12 @@ namespace ego_planner
 
   bool EGOReplanFSM::callEmergencyStop(Eigen::Vector3d stop_pos)
   {
-
-    planner_manager_->EmergencyStop(stop_pos);
+    if (!planner_manager_->EmergencyStop(stop_pos))
+    {
+      ROS_ERROR("[drone %d] Failed to install emergency-stop trajectory.",
+                planner_manager_->pp_.drone_id);
+      return false;
+    }
 
     traj_utils::PolyTraj poly_msg;
     traj_utils::MINCOTraj MINCO_msg;
@@ -791,8 +1532,9 @@ namespace ego_planner
   void EGOReplanFSM::mandatoryStopCallback(const std_msgs::Empty &msg)
   {
     mandatory_stop_ = true;
-    ROS_ERROR("Received a mandatory stop command!");
-    changeFSMExecState(EMERGENCY_STOP, "Mandatory Stop");
+    ROS_ERROR("[drone %d] Received a mandatory stop command!",
+              planner_manager_->pp_.drone_id);
+    changeFSMExecState(EMERGENCY_STOP, "MANDATORY_STOP");
     enable_fail_safe_ = false;
   }
 
@@ -912,15 +1654,16 @@ namespace ego_planner
     {
       if ((int)planner_manager_->traj_.swarm_traj.size() >= planner_manager_->pp_.drone_id)
       {
+        bool received_all_preceding_agents = true;
         for (int i = 0; i < planner_manager_->pp_.drone_id; ++i)
         {
           if (planner_manager_->traj_.swarm_traj[i].drone_id != i)
           {
+            received_all_preceding_agents = false;
             break;
           }
-
-          have_recv_pre_agent_ = true;
         }
+        have_recv_pre_agent_ = received_all_preceding_agents;
       }
     }
   }

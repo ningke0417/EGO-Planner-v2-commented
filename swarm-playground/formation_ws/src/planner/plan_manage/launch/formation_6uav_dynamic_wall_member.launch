@@ -1,0 +1,75 @@
+<launch>
+    <!-- One member of the isolated six-UAV dynamic 2x3 formation. -->
+    <arg name="drone_id"/>
+    <arg name="init_x"/>
+    <arg name="init_y"/>
+    <arg name="init_z" default="1.5"/>
+    <arg name="map_size_x" default="20.0"/>
+    <arg name="map_size_y" default="14.0"/>
+    <arg name="map_size_z" default="3.0"/>
+    <arg name="odom_topic" default="visual_slam/odom"/>
+    <arg name="max_vel" default="0.3"/>
+    <arg name="start_x" default="-6.0"/>
+    <arg name="goal_x" default="8.0"/>
+    <arg name="wall_x" default="0.0"/>
+    <arg name="wall_y" default="0.0"/>
+    <arg name="wall_size_x" default="0.5"/>
+    <arg name="wall_size_y" default="4.7"/>
+    <arg name="safety_distance" default="0.2"/>
+    <arg name="wall_guard_check_horizon" default="3.0"/>
+    <arg name="formation_weight" default="100"/>
+
+    <include file="$(find ego_planner)/launch/run_in_sim.launch">
+        <arg name="drone_id" value="$(arg drone_id)"/>
+        <arg name="init_x" value="$(arg init_x)"/>
+        <arg name="init_y" value="$(arg init_y)"/>
+        <arg name="init_z" value="$(arg init_z)"/>
+        <arg name="map_size_x" value="$(arg map_size_x)"/>
+        <arg name="map_size_y" value="$(arg map_size_y)"/>
+        <arg name="map_size_z" value="$(arg map_size_z)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+
+        <arg name="obstacles_inflation" value="$(arg safety_distance)"/>
+        <arg name="obstacle_clearance" value="$(arg safety_distance)"/>
+        <arg name="use_wall_collision_guard" value="true"/>
+        <arg name="wall_x" value="$(arg wall_x)"/>
+        <arg name="wall_y" value="$(arg wall_y)"/>
+        <arg name="wall_size_x" value="$(arg wall_size_x)"/>
+        <arg name="wall_size_y" value="$(arg wall_size_y)"/>
+        <arg name="wall_safety_distance" value="$(arg safety_distance)"/>
+        <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
+
+        <!-- This is the only existing planner path that opts into non-4-UAV
+             dynamic topology.  All older launches inherit false. -->
+        <arg name="general_dynamic_topology_enabled" value="true"/>
+        <arg name="manual_formation_split" value="false"/>
+        <arg name="split_side_guidance_enabled" value="false"/>
+        <arg name="split_subgroup_formation_weight_scale" value="0.15"/>
+        <arg name="split_progress_sync_weight_scale" value="0.0"/>
+        <arg name="subgroup_route_intent_feedback_enabled" value="false"/>
+        <arg name="formation_weight" value="$(arg formation_weight)"/>
+
+        <arg name="formation_num" value="6"/>
+        <arg name="formation_start_x" value="$(arg start_x)"/>
+        <arg name="formation_start_y" value="0.0"/>
+        <arg name="formation_start_z" value="1.5"/>
+        <arg name="formation_drone0_x" value="0.5"/>
+        <arg name="formation_drone0_y" value="-1.0"/>
+        <arg name="formation_drone1_x" value="0.5"/>
+        <arg name="formation_drone1_y" value="0.0"/>
+        <arg name="formation_drone2_x" value="0.5"/>
+        <arg name="formation_drone2_y" value="1.0"/>
+        <arg name="formation_drone3_x" value="-0.5"/>
+        <arg name="formation_drone3_y" value="-1.0"/>
+        <arg name="formation_drone4_x" value="-0.5"/>
+        <arg name="formation_drone4_y" value="0.0"/>
+        <arg name="formation_drone5_x" value="-0.5"/>
+        <arg name="formation_drone5_y" value="1.0"/>
+
+        <arg name="point_num" value="1"/>
+        <arg name="point0_x" value="$(arg goal_x)"/>
+        <arg name="point0_y" value="0.0"/>
+        <arg name="point0_z" value="1.5"/>
+    </include>
+</launch>

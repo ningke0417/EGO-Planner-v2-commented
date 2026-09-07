@@ -1,10 +1,38 @@
 // #include <fstream>
+#include <cmath>
 #include <plan_manage/planner_manager.h>
 #include <thread>
 #include "visualization_msgs/Marker.h" // zx-todo
 
 namespace ego_planner
 {
+  void EGOPlannerManager::setManualFormationSplit(const bool enabled)
+  {
+    ploy_traj_opt_->setManualFormationSplit(enabled);
+  }
+
+  void EGOPlannerManager::setDynamicFormationGroups(const std::vector<int> &groups)
+  {
+    ploy_traj_opt_->setDynamicFormationGroups(groups);
+  }
+
+  void EGOPlannerManager::setSplitSubgroupFormationWeightScale(const double scale)
+  {
+    ploy_traj_opt_->setSplitSubgroupFormationWeightScale(scale);
+  }
+
+  void EGOPlannerManager::setSplitProgressSyncWeightScale(const double scale)
+  {
+    ploy_traj_opt_->setSplitProgressSyncWeightScale(scale);
+  }
+
+  void EGOPlannerManager::setSubgroupRouteIntent(
+      const bool active, const Eigen::Vector3d &origin,
+      const Eigen::Vector3d &direction, const double gain)
+  {
+    ploy_traj_opt_->setSubgroupRouteIntent(active, origin, direction, gain);
+  }
+
 
   // SECTION interfaces for setup and query
 
@@ -23,6 +51,22 @@ namespace ego_planner
     nh.param("manager/planning_horizon", pp_.planning_horizen_, 5.0);
     nh.param("manager/use_distinctive_trajs", pp_.use_distinctive_trajs, false);
     nh.param("manager/drone_id", pp_.drone_id, -1);
+    nh.param("manager/use_wall_collision_guard", use_wall_collision_guard_, false);
+    nh.param("manager/wall_x", wall_x_, 0.0);
+    nh.param("manager/wall_y", wall_y_, 0.0);
+    nh.param("manager/wall_size_x", wall_size_x_, 0.0);
+    nh.param("manager/wall_size_y", wall_size_y_, 0.0);
+    nh.param("manager/wall_safety_distance", wall_safety_distance_, 0.0);
+    nh.param("manager/wall_guard_check_horizon", wall_guard_check_horizon_, 3.0);
+
+    ROS_INFO_STREAM("[wall_guard_config] drone=" << pp_.drone_id
+                    << " enabled=" << (use_wall_collision_guard_ ? "true" : "false")
+                    << " source=inflated_grid"
+                    << " segment_check=voxel_traversal"
+                    << " center=(" << wall_x_ << "," << wall_y_ << ")"
+                    << " physical_size=(" << wall_size_x_ << "," << wall_size_y_ << ")"
+                    << " requested_safety=" << wall_safety_distance_
+                    << " horizon=" << wall_guard_check_horizon_);
 
     grid_map_.reset(new GridMap);
     grid_map_->initMap(nh);
@@ -35,6 +79,59 @@ namespace ego_planner
 
     ploy_traj_opt_->setSwarmTrajs(&traj_.swarm_traj);
     ploy_traj_opt_->setDroneId(pp_.drone_id);
+  }
+
+  bool EGOPlannerManager::isInsideWallGuard(
+      const Eigen::Vector3d &position) const
+  {
+    if (!use_wall_collision_guard_ || !grid_map_)
+      return false;
+
+    // The inflated occupancy grid is the single source of truth for the
+    // guard boundary.  Checking the analytic wall rectangle here used to
+    // disagree with voxel quantization by up to one cell near its boundary.
+    return grid_map_->getInflateOccupancy(position) == 1;
+  }
+
+  bool EGOPlannerManager::violatesWallCollisionGuard(
+      const Eigen::Vector3d &position) const
+  {
+    return isInsideWallGuard(position);
+  }
+
+  bool EGOPlannerManager::segmentViolatesWallCollisionGuard(
+      const Eigen::Vector3d &start,
+      const Eigen::Vector3d &end) const
+  {
+    if (!use_wall_collision_guard_ || !grid_map_)
+      return false;
+
+    if (grid_map_->getInflateOccupancy(start) == 1 ||
+        grid_map_->getInflateOccupancy(end) == 1)
+      return true;
+
+    const double resolution = grid_map_->getResolution();
+    if (resolution <= 0.0)
+      return false;
+
+    // Traverse every voxel touched between consecutive trajectory samples.
+    // This preserves the anti-tunnelling purpose of the wall guard while
+    // using exactly the same inflated cells as the optimizer and map checks.
+    const Eigen::Vector3d origin = grid_map_->getOrigin();
+    RayCaster raycaster;
+    if (!raycaster.setInput((start - origin) / resolution,
+                            (end - origin) / resolution))
+      return false;
+
+    Eigen::Vector3d ray_index;
+    while (raycaster.step(ray_index))
+    {
+      const Eigen::Vector3i index = ray_index.cast<int>();
+      if (grid_map_->getInflateOccupancyByIndex(index) == 1)
+        return true;
+    }
+
+    return false;
   }
 
   bool EGOPlannerManager::computeInitState(
@@ -215,7 +312,8 @@ namespace ego_planner
     }
   }
 
-  bool EGOPlannerManager::setLocalTrajFromOpt(const poly_traj::MinJerkOpt &opt, const bool touch_goal)
+  bool EGOPlannerManager::setLocalTrajFromOpt(const poly_traj::MinJerkOpt &opt,
+                                              const bool touch_goal)
   {
     poly_traj::Trajectory traj = opt.getTraj();
     Eigen::MatrixXd cps = opt.getInitConstraintPoints(getCpsNumPrePiece());
@@ -371,7 +469,12 @@ namespace ego_planner
          << ",optimize:" << t_opt.toSec()
          << ",avg_time=" << sum_time / count_success << endl;
 
-    setLocalTrajFromOpt(best_MJO, touch_goal);
+    if (!setLocalTrajFromOpt(best_MJO, touch_goal))
+    {
+      visualization_->displayFailedList(cstr_pts, 0);
+      continous_failures_count_++;
+      return false;
+    }
     visualization_->displayOptimalList(cstr_pts, 0);
 
     // success. YoY
@@ -381,6 +484,12 @@ namespace ego_planner
 
   bool EGOPlannerManager::EmergencyStop(Eigen::Vector3d stop_pos)
   {
+    if (!stop_pos.allFinite())
+    {
+      ROS_ERROR("Cannot create emergency-stop trajectory from a non-finite position.");
+      return false;
+    }
+
     auto ZERO = Eigen::Vector3d::Zero();
     Eigen::Matrix<double, 3, 3> headState, tailState;
     headState << stop_pos, ZERO, ZERO;
@@ -389,7 +498,29 @@ namespace ego_planner
     stopMJO.reset(headState, tailState, 2);
     stopMJO.generate(stop_pos, Eigen::Vector2d(1.0, 1.0));
 
-    setLocalTrajFromOpt(stopMJO, false);
+    // A stationary trajectory does not travel far enough for the normal
+    // distance-based collision sampler. Install it directly with one sample
+    // per checked control-point interval so emergency stop cannot silently
+    // fall back to the previous moving trajectory.
+    poly_traj::Trajectory stop_traj = stopMJO.getTraj();
+    Eigen::MatrixXd cps =
+        stopMJO.getInitConstraintPoints(getCpsNumPrePiece());
+    const int checked_point_count = std::max(
+        1, ConstraintPoints::two_thirds_id(cps, false));
+    const double duration = stop_traj.getTotalDuration();
+    PtsChk_t stop_points(checked_point_count);
+    for (int index = 0; index < checked_point_count; ++index)
+    {
+      const double sample_time =
+          duration * static_cast<double>(index + 1) /
+          static_cast<double>(checked_point_count);
+      stop_points[index].emplace_back(sample_time, stop_pos);
+    }
+    traj_.setLocalTraj(stop_traj, stop_points, ros::Time::now().toSec());
+
+    ROS_WARN("[drone %d] Installed emergency-stop trajectory id=%d at (%.3f, %.3f, %.3f).",
+             pp_.drone_id, traj_.local_traj.traj_id,
+             stop_pos.x(), stop_pos.y(), stop_pos.z());
 
     return true;
   }

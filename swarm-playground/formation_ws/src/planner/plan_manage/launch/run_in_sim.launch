@@ -12,6 +12,50 @@
     <arg name="drone_id"/>
     <!-- topic of your odometry such as VIO or LIO -->
     <arg name="odom_topic"/>
+    <arg name="cloud_topic" default="pcl_render_node/cloud"/>
+    <arg name="obstacles_inflation" default="0.0"/>
+    <arg name="obstacle_clearance" default="0.1"/>
+    <arg name="manual_formation_split" default="false"/>
+    <arg name="general_dynamic_topology_enabled" default="false"/>
+    <arg name="split_side_guidance_enabled" default="false"/>
+    <arg name="split_side_guidance_weight" default="600.0"/>
+    <arg name="split_side_guidance_margin" default="0.35"/>
+    <arg name="split_side_guidance_center_y" default="0.0"/>
+    <arg name="split_subgroup_formation_weight_scale" default="1.0"/>
+    <arg name="split_progress_sync_weight_scale" default="0.0"/>
+    <arg name="split_progress_sync_deadband" default="0.6"/>
+    <arg name="subgroup_route_intent_feedback_enabled" default="false"/>
+    <arg name="subgroup_route_intent_weight" default="80.0"/>
+    <arg name="subgroup_route_intent_corridor_half_width" default="0.25"/>
+    <arg name="formation_weight" default="100"/>
+    <arg name="use_wall_collision_guard" default="false"/>
+    <arg name="wall_x" default="0.0"/>
+    <arg name="wall_y" default="0.0"/>
+    <arg name="wall_size_x" default="0.0"/>
+    <arg name="wall_size_y" default="0.0"/>
+    <arg name="wall_safety_distance" default="0.0"/>
+    <arg name="wall_guard_check_horizon" default="3.0"/>
+    <arg name="formation_num" default="7"/>
+    <arg name="formation_start_x" default="-32.0"/>
+    <arg name="formation_start_y" default="0.0"/>
+    <arg name="formation_start_z" default="1.0"/>
+    <arg name="formation_drone0_x" default="1.0"/>
+    <arg name="formation_drone0_y" default="-0.5"/>
+    <arg name="formation_drone1_x" default="1.0"/>
+    <arg name="formation_drone1_y" default="0.5"/>
+    <arg name="formation_drone2_x" default="0.0"/>
+    <arg name="formation_drone2_y" default="-1.0"/>
+    <arg name="formation_drone3_x" default="0.0"/>
+    <arg name="formation_drone3_y" default="0.0"/>
+    <arg name="formation_drone4_x" default="0.0"/>
+    <arg name="formation_drone4_y" default="1.0"/>
+    <arg name="formation_drone5_x" default="-1.0"/>
+    <arg name="formation_drone5_y" default="-0.5"/>
+    <arg name="max_vel" default="1.5"/>
+    <arg name="point_num" default="4"/>
+    <arg name="point0_x" default="0.0"/>
+    <arg name="point0_y" default="-30.0"/>
+    <arg name="point0_z" default="1.0"/>
     <!-- number of moving objects -->
     <arg name="obj_num" value="10" />
     <!-- main algorithm params -->
@@ -22,6 +66,44 @@
         <arg name="map_size_z_" value="$(arg map_size_z)"/>
         <arg name="odometry_topic" value="$(arg odom_topic)"/>
         <arg name="obj_num_set" value="$(arg obj_num)" />
+        <arg name="obstacles_inflation" value="$(arg obstacles_inflation)"/>
+        <arg name="obstacle_clearance" value="$(arg obstacle_clearance)"/>
+        <arg name="manual_formation_split" value="$(arg manual_formation_split)"/>
+        <arg name="general_dynamic_topology_enabled" value="$(arg general_dynamic_topology_enabled)"/>
+        <arg name="split_side_guidance_enabled" value="$(arg split_side_guidance_enabled)"/>
+        <arg name="split_side_guidance_weight" value="$(arg split_side_guidance_weight)"/>
+        <arg name="split_side_guidance_margin" value="$(arg split_side_guidance_margin)"/>
+        <arg name="split_side_guidance_center_y" value="$(arg split_side_guidance_center_y)"/>
+        <arg name="split_subgroup_formation_weight_scale" value="$(arg split_subgroup_formation_weight_scale)"/>
+        <arg name="split_progress_sync_weight_scale" value="$(arg split_progress_sync_weight_scale)"/>
+        <arg name="split_progress_sync_deadband" value="$(arg split_progress_sync_deadband)"/>
+        <arg name="subgroup_route_intent_feedback_enabled" value="$(arg subgroup_route_intent_feedback_enabled)"/>
+        <arg name="subgroup_route_intent_weight" value="$(arg subgroup_route_intent_weight)"/>
+        <arg name="subgroup_route_intent_corridor_half_width" value="$(arg subgroup_route_intent_corridor_half_width)"/>
+        <arg name="formation_weight" value="$(arg formation_weight)"/>
+        <arg name="use_wall_collision_guard" value="$(arg use_wall_collision_guard)"/>
+        <arg name="wall_x" value="$(arg wall_x)"/>
+        <arg name="wall_y" value="$(arg wall_y)"/>
+        <arg name="wall_size_x" value="$(arg wall_size_x)"/>
+        <arg name="wall_size_y" value="$(arg wall_size_y)"/>
+        <arg name="wall_safety_distance" value="$(arg wall_safety_distance)"/>
+        <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
+        <arg name="formation_num" value="$(arg formation_num)"/>
+        <arg name="formation_start_x" value="$(arg formation_start_x)"/>
+        <arg name="formation_start_y" value="$(arg formation_start_y)"/>
+        <arg name="formation_start_z" value="$(arg formation_start_z)"/>
+        <arg name="formation_drone0_x" value="$(arg formation_drone0_x)"/>
+        <arg name="formation_drone0_y" value="$(arg formation_drone0_y)"/>
+        <arg name="formation_drone1_x" value="$(arg formation_drone1_x)"/>
+        <arg name="formation_drone1_y" value="$(arg formation_drone1_y)"/>
+        <arg name="formation_drone2_x" value="$(arg formation_drone2_x)"/>
+        <arg name="formation_drone2_y" value="$(arg formation_drone2_y)"/>
+        <arg name="formation_drone3_x" value="$(arg formation_drone3_x)"/>
+        <arg name="formation_drone3_y" value="$(arg formation_drone3_y)"/>
+        <arg name="formation_drone4_x" value="$(arg formation_drone4_x)"/>
+        <arg name="formation_drone4_y" value="$(arg formation_drone4_y)"/>
+        <arg name="formation_drone5_x" value="$(arg formation_drone5_x)"/>
+        <arg name="formation_drone5_y" value="$(arg formation_drone5_y)"/>
         <!-- camera pose: transform of camera frame in the world frame -->
         <!-- depth topic: depth image, 640x480 by default -->
         <!-- don't set cloud_topic if you already set these ones! -->
@@ -29,14 +111,14 @@
         <arg name="depth_topic" value="pcl_render_node/depth"/>
         <!-- topic of point cloud measurement, such as from LIDAR  -->
         <!-- don't set camera pose and depth, if you already set this one! -->
-        <arg name="cloud_topic" value="pcl_render_node/cloud"/>
+        <arg name="cloud_topic" value="$(arg cloud_topic)"/>
         <!-- intrinsic params of the depth camera -->
         <arg name="cx" value="321.04638671875"/>
         <arg name="cy" value="243.44969177246094"/>
         <arg name="fx" value="387.229248046875"/>
         <arg name="fy" value="387.229248046875"/>
         <!-- maximum velocity, acceleration and jerk the drone will reach -->
-        <arg name="max_vel" value="1.5" />
+        <arg name="max_vel" value="$(arg max_vel)" />
         <arg name="max_acc" value="6.0" />
         <arg name="max_jer" value="20.0" />
         <!--always set to 1.5 times grater than sensing horizen-->
@@ -47,10 +129,10 @@
         <arg name="flight_type" value="2" />
         <!-- global waypoints -->
         <!-- It generates a piecewise min-snap traj passing all waypoints -->
-        <arg name="point_num" value="4" />
-        <arg name="point0_x" value="0" />
-        <arg name="point0_y" value="-30" />
-        <arg name="point0_z" value="1" />
+        <arg name="point_num" value="$(arg point_num)" />
+        <arg name="point0_x" value="$(arg point0_x)" />
+        <arg name="point0_y" value="$(arg point0_y)" />
+        <arg name="point0_z" value="$(arg point0_z)" />
         <arg name="point1_x" value="30" />
         <arg name="point1_y" value="0" />
         <arg name="point1_z" value="1.0" />

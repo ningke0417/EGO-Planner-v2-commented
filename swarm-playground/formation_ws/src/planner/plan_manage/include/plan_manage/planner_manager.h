@@ -50,7 +50,21 @@ namespace ego_planner
         bool &touch_goal);
     bool EmergencyStop(Eigen::Vector3d stop_pos);
     bool checkCollision(int drone_id);
-    bool setLocalTrajFromOpt(const poly_traj::MinJerkOpt &opt, const bool touch_goal);
+    void setManualFormationSplit(const bool enabled);
+    void setDynamicFormationGroups(const std::vector<int> &groups);
+    void setSplitSubgroupFormationWeightScale(const double scale);
+    void setSplitProgressSyncWeightScale(const double scale);
+    void setSubgroupRouteIntent(const bool active,
+                                const Eigen::Vector3d &origin,
+                                const Eigen::Vector3d &direction,
+                                const double gain = 1.0);
+    bool setLocalTrajFromOpt(const poly_traj::MinJerkOpt &opt,
+                             const bool touch_goal);
+    bool violatesWallCollisionGuard(const Eigen::Vector3d &position) const;
+    bool segmentViolatesWallCollisionGuard(
+        const Eigen::Vector3d &start,
+        const Eigen::Vector3d &end) const;
+    inline double getWallGuardCheckHorizon(void) const { return wall_guard_check_horizon_; }
     inline double getSwarmClearance(void) { return ploy_traj_opt_->get_swarm_clearance_(); }
     inline int getCpsNumPrePiece(void) { return ploy_traj_opt_->get_cps_num_prePiece_(); }
     // inline PtsChk_t getPtsCheck(void) { return ploy_traj_opt_->get_pts_check_(); }
@@ -65,6 +79,15 @@ namespace ego_planner
     PolyTrajOptimizer::Ptr ploy_traj_opt_;
 
     int continous_failures_count_{0};
+    bool use_wall_collision_guard_{false};
+    double wall_x_{0.0};
+    double wall_y_{0.0};
+    double wall_size_x_{0.0};
+    double wall_size_y_{0.0};
+    double wall_safety_distance_{0.0};
+    double wall_guard_check_horizon_{3.0};
+
+    bool isInsideWallGuard(const Eigen::Vector3d &position) const;
 
   public:
     typedef unique_ptr<EGOPlannerManager> Ptr;

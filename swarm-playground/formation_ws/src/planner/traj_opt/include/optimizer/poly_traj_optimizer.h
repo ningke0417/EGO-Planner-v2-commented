@@ -98,8 +98,24 @@ namespace ego_planner
     double max_vel_, max_acc_;                                    // dynamic limits
 
     int formation_num_;
+    bool manual_formation_split_{false};
+    bool dynamic_formation_groups_active_{false};
+    std::vector<int> dynamic_formation_groups_;
+    bool split_side_guidance_enabled_{false};
     Eigen::MatrixXd formation_;
     Eigen::Vector3d FStart_, FEnd_;                                 //first start pt, final end pt
+    double split_side_guidance_weight_{0.0};
+    double split_side_guidance_margin_{0.35};
+    double split_side_guidance_center_y_{0.0};
+    double split_subgroup_formation_weight_scale_{1.0};
+    double split_progress_sync_weight_scale_{0.0};
+    double split_progress_sync_deadband_{0.6};
+    bool subgroup_route_intent_active_{false};
+    Eigen::Vector3d subgroup_route_intent_origin_{Eigen::Vector3d::Zero()};
+    Eigen::Vector3d subgroup_route_intent_direction_{Eigen::Vector3d::UnitX()};
+    double subgroup_route_intent_gain_{0.0};
+    double subgroup_route_intent_weight_{80.0};
+    double subgroup_route_intent_corridor_half_width_{0.25};
 
     double t_now_;
 
@@ -120,6 +136,14 @@ namespace ego_planner
     void setControlPoints(const Eigen::MatrixXd &points);
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
     void setDroneId(const int drone_id);
+    void setManualFormationSplit(const bool enabled);
+    void setDynamicFormationGroups(const std::vector<int> &groups);
+    void setSplitSubgroupFormationWeightScale(const double scale);
+    void setSplitProgressSyncWeightScale(const double scale);
+    void setSubgroupRouteIntent(const bool active,
+                                const Eigen::Vector3d &origin,
+                                const Eigen::Vector3d &direction,
+                                const double gain = 1.0);
     void setIfTouchGoal(const bool touch_goal);
     void setFStartFEnd(const Eigen::Vector3d &formation_start_pt, const Eigen::Vector3d &formation_end_pt);
     void setConstraintPoints(ConstraintPoints cps);

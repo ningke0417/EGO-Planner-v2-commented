@@ -1,0 +1,166 @@
+<launch>
+    <!-- Six-UAV no-split baseline.
+         Same wall-style scenario as the current four-UAV experiment, but with
+         six vehicles in a 2x3 formation and no dynamic split/merge bridge. -->
+    <arg name="rviz" default="true"/>
+    <arg name="max_vel" default="0.3"/>
+    <arg name="map_size_x" default="20.0"/>
+    <arg name="map_size_y" default="14.0"/>
+    <arg name="map_size_z" default="3.0"/>
+    <arg name="odom_topic" default="visual_slam/odom"/>
+    <arg name="start_x" default="-6.0"/>
+    <arg name="goal_x" default="8.0"/>
+    <arg name="wall_x" default="0.0"/>
+    <arg name="wall_y" default="0.0"/>
+    <arg name="wall_size_x" default="0.5"/>
+    <arg name="wall_size_y" default="4.7"/>
+    <arg name="safety_distance" default="0.2"/>
+    <arg name="wall_guard_check_horizon" default="3.0"/>
+    <arg name="formation_weight" default="100"/>
+
+    <include file="$(find swarm_bridge)/launch/bridge_udp.launch">
+        <arg name="drone_id" value="999"/>
+        <arg name="broadcast_ip" value="127.0.0.255"/>
+    </include>
+
+    <node pkg="map_generator" type="fixed_wall_map" name="fixed_wall_map"
+          output="screen" required="true">
+        <remap from="global_cloud" to="/map_generator/global_cloud"/>
+        <param name="wall_x" value="$(arg wall_x)" type="double"/>
+        <param name="wall_y" value="$(arg wall_y)" type="double"/>
+        <param name="size_x" value="$(arg wall_size_x)" type="double"/>
+        <param name="size_y" value="$(arg wall_size_y)" type="double"/>
+        <param name="safety_distance" value="$(arg safety_distance)" type="double"/>
+        <param name="resolution" value="0.1" type="double"/>
+        <param name="height" value="3.0" type="double"/>
+    </node>
+
+    <node pkg="ego_planner" type="formation_backend_visualizer_6uav_node"
+          name="formation_backend_visualizer_6uav" output="screen">
+        <param name="odom_topic_suffix" value="$(arg odom_topic)"/>
+        <param name="frame_id" value="world"/>
+        <param name="publish_rate" value="10.0" type="double"/>
+    </node>
+
+    <include file="$(find ego_planner)/launch/formation_6uav_wall_member.launch">
+        <arg name="drone_id" value="0"/>
+        <arg name="init_x" value="$(eval float(arg('start_x')) + 0.5)"/>
+        <arg name="init_y" value="-1.0"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+        <arg name="map_size_x" value="$(arg map_size_x)"/>
+        <arg name="map_size_y" value="$(arg map_size_y)"/>
+        <arg name="map_size_z" value="$(arg map_size_z)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="start_x" value="$(arg start_x)"/>
+        <arg name="goal_x" value="$(arg goal_x)"/>
+        <arg name="wall_x" value="$(arg wall_x)"/>
+        <arg name="wall_y" value="$(arg wall_y)"/>
+        <arg name="wall_size_x" value="$(arg wall_size_x)"/>
+        <arg name="wall_size_y" value="$(arg wall_size_y)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
+        <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
+        <arg name="formation_weight" value="$(arg formation_weight)"/>
+    </include>
+
+    <include file="$(find ego_planner)/launch/formation_6uav_wall_member.launch">
+        <arg name="drone_id" value="1"/>
+        <arg name="init_x" value="$(eval float(arg('start_x')) + 0.5)"/>
+        <arg name="init_y" value="0.0"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+        <arg name="map_size_x" value="$(arg map_size_x)"/>
+        <arg name="map_size_y" value="$(arg map_size_y)"/>
+        <arg name="map_size_z" value="$(arg map_size_z)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="start_x" value="$(arg start_x)"/>
+        <arg name="goal_x" value="$(arg goal_x)"/>
+        <arg name="wall_x" value="$(arg wall_x)"/>
+        <arg name="wall_y" value="$(arg wall_y)"/>
+        <arg name="wall_size_x" value="$(arg wall_size_x)"/>
+        <arg name="wall_size_y" value="$(arg wall_size_y)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
+        <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
+        <arg name="formation_weight" value="$(arg formation_weight)"/>
+    </include>
+
+    <include file="$(find ego_planner)/launch/formation_6uav_wall_member.launch">
+        <arg name="drone_id" value="2"/>
+        <arg name="init_x" value="$(eval float(arg('start_x')) + 0.5)"/>
+        <arg name="init_y" value="1.0"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+        <arg name="map_size_x" value="$(arg map_size_x)"/>
+        <arg name="map_size_y" value="$(arg map_size_y)"/>
+        <arg name="map_size_z" value="$(arg map_size_z)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="start_x" value="$(arg start_x)"/>
+        <arg name="goal_x" value="$(arg goal_x)"/>
+        <arg name="wall_x" value="$(arg wall_x)"/>
+        <arg name="wall_y" value="$(arg wall_y)"/>
+        <arg name="wall_size_x" value="$(arg wall_size_x)"/>
+        <arg name="wall_size_y" value="$(arg wall_size_y)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
+        <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
+        <arg name="formation_weight" value="$(arg formation_weight)"/>
+    </include>
+
+    <include file="$(find ego_planner)/launch/formation_6uav_wall_member.launch">
+        <arg name="drone_id" value="3"/>
+        <arg name="init_x" value="$(eval float(arg('start_x')) - 0.5)"/>
+        <arg name="init_y" value="-1.0"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+        <arg name="map_size_x" value="$(arg map_size_x)"/>
+        <arg name="map_size_y" value="$(arg map_size_y)"/>
+        <arg name="map_size_z" value="$(arg map_size_z)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="start_x" value="$(arg start_x)"/>
+        <arg name="goal_x" value="$(arg goal_x)"/>
+        <arg name="wall_x" value="$(arg wall_x)"/>
+        <arg name="wall_y" value="$(arg wall_y)"/>
+        <arg name="wall_size_x" value="$(arg wall_size_x)"/>
+        <arg name="wall_size_y" value="$(arg wall_size_y)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
+        <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
+        <arg name="formation_weight" value="$(arg formation_weight)"/>
+    </include>
+
+    <include file="$(find ego_planner)/launch/formation_6uav_wall_member.launch">
+        <arg name="drone_id" value="4"/>
+        <arg name="init_x" value="$(eval float(arg('start_x')) - 0.5)"/>
+        <arg name="init_y" value="0.0"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+        <arg name="map_size_x" value="$(arg map_size_x)"/>
+        <arg name="map_size_y" value="$(arg map_size_y)"/>
+        <arg name="map_size_z" value="$(arg map_size_z)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="start_x" value="$(arg start_x)"/>
+        <arg name="goal_x" value="$(arg goal_x)"/>
+        <arg name="wall_x" value="$(arg wall_x)"/>
+        <arg name="wall_y" value="$(arg wall_y)"/>
+        <arg name="wall_size_x" value="$(arg wall_size_x)"/>
+        <arg name="wall_size_y" value="$(arg wall_size_y)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
+        <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
+        <arg name="formation_weight" value="$(arg formation_weight)"/>
+    </include>
+
+    <include file="$(find ego_planner)/launch/formation_6uav_wall_member.launch">
+        <arg name="drone_id" value="5"/>
+        <arg name="init_x" value="$(eval float(arg('start_x')) - 0.5)"/>
+        <arg name="init_y" value="1.0"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+        <arg name="map_size_x" value="$(arg map_size_x)"/>
+        <arg name="map_size_y" value="$(arg map_size_y)"/>
+        <arg name="map_size_z" value="$(arg map_size_z)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="start_x" value="$(arg start_x)"/>
+        <arg name="goal_x" value="$(arg goal_x)"/>
+        <arg name="wall_x" value="$(arg wall_x)"/>
+        <arg name="wall_y" value="$(arg wall_y)"/>
+        <arg name="wall_size_x" value="$(arg wall_size_x)"/>
+        <arg name="wall_size_y" value="$(arg wall_size_y)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
+        <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
+        <arg name="formation_weight" value="$(arg formation_weight)"/>
+    </include>
+
+    <include if="$(arg rviz)" file="$(find ego_planner)/launch/rviz.launch"/>
+</launch>

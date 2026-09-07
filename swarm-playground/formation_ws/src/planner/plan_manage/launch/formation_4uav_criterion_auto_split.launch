@@ -1,0 +1,19 @@
+<launch>
+    <!-- First closed-loop criterion gate: current-state StarConvex plus
+         visibility may switch INTACT -> SPLIT once. Automatic merge and
+         prediction are deliberately disabled. -->
+    <arg name="rviz" default="true"/>
+    <arg name="max_vel" default="0.3"/>
+    <arg name="pillar_radius" default="1.0"/>
+    <arg name="safety_distance" default="0.2"/>
+
+    <include file="$(find ego_planner)/launch/formation_4uav_criterion_shadow.launch">
+        <arg name="rviz" value="$(arg rviz)"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+        <arg name="map_shape" value="pillar"/>
+        <arg name="pillar_radius" value="$(arg pillar_radius)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
+        <arg name="manual_split" value="false"/>
+        <arg name="enable_auto_split" value="true"/>
+    </include>
+</launch>

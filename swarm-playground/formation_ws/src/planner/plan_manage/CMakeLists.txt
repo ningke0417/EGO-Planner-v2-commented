@@ -13,6 +13,8 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   std_msgs
   geometry_msgs
+  nav_msgs
+  visualization_msgs
   quadrotor_msgs
   plan_env
   path_searching
@@ -22,11 +24,27 @@ find_package(catkin REQUIRED COMPONENTS
   cv_bridge
 )
 
+add_message_files(
+  FILES
+  FormationTopologyCommand.msg
+  FormationTopologyAck.msg
+)
+
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+)
+
+set(STARCONVEX_ROOT "/home/robot/Codes/StarConvex" CACHE PATH
+    "Root of the unmodified StarConvex checkout")
+set(CRITERION_STARCONVEX_INCLUDE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../criterion_validation/starconvex_adapter/include")
+
 # catkin_package(CATKIN_DEPENDS message_runtime)
 catkin_package(
  INCLUDE_DIRS include
  LIBRARIES ego_planner
- CATKIN_DEPENDS plan_env path_searching traj_opt traj_utils 
+ CATKIN_DEPENDS plan_env path_searching traj_opt traj_utils message_runtime
 #  DEPENDS system_lib
 )
 
@@ -36,6 +54,9 @@ include_directories(
   ${catkin_INCLUDE_DIRS} ${PROJECT_SOURCE_DIR}/include
   ${EIGEN3_INCLUDE_DIR}
   ${PCL_INCLUDE_DIRS}
+  ${CRITERION_STARCONVEX_INCLUDE}
+  ${STARCONVEX_ROOT}/src/planner/generating_corridor/include
+  ${STARCONVEX_ROOT}/src/planner/generating_corridor/ThirdParty
 )
 
 
@@ -47,10 +68,58 @@ add_executable(ego_planner_node
 target_link_libraries(ego_planner_node 
   ${catkin_LIBRARIES}
   )
-#add_dependencies(ego_planner_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
+add_dependencies(ego_planner_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 add_executable(traj_server src/traj_server.cpp)
 target_link_libraries(traj_server ${catkin_LIBRARIES})
 # add_dependencies(traj_server ${${PROJECT_NAME}_EXPORTED_TARGETS})
 
+add_executable(starconvex_shadow_4uav_node src/starconvex_shadow_4uav_node.cpp)
+target_link_libraries(starconvex_shadow_4uav_node
+  ${STARCONVEX_ROOT}/devel/lib/libstar_cvx.a
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
+)
 
+add_executable(starconvex_shadow_6uav_node src/starconvex_shadow_6uav_node.cpp)
+target_link_libraries(starconvex_shadow_6uav_node
+  ${STARCONVEX_ROOT}/devel/lib/libstar_cvx.a
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
+)
+
+add_executable(formation_backend_visualizer_4uav_node
+  src/formation_backend_visualizer_4uav_node.cpp)
+target_link_libraries(formation_backend_visualizer_4uav_node
+  ${catkin_LIBRARIES}
+)
+
+add_executable(formation_backend_visualizer_6uav_node
+  src/formation_backend_visualizer_6uav_node.cpp)
+target_link_libraries(formation_backend_visualizer_6uav_node
+  ${catkin_LIBRARIES}
+)
+
+add_executable(formation_auto_split_bridge_4uav_node
+  src/formation_auto_split_bridge_4uav_node.cpp)
+target_link_libraries(formation_auto_split_bridge_4uav_node
+  ${catkin_LIBRARIES}
+)
+add_dependencies(formation_auto_split_bridge_4uav_node
+  ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
+add_executable(formation_auto_split_bridge_6uav_node
+  src/formation_auto_split_bridge_6uav_node.cpp)
+target_link_libraries(formation_auto_split_bridge_6uav_node
+  ${catkin_LIBRARIES}
+)
+add_dependencies(formation_auto_split_bridge_6uav_node
+  ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
+add_executable(subgroup_route_intent_4uav_node
+  src/subgroup_route_intent_4uav_node.cpp)
+target_link_libraries(subgroup_route_intent_4uav_node
+  ${STARCONVEX_ROOT}/devel/lib/libstar_cvx.a
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
+)

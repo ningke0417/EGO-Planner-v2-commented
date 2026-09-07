@@ -3,12 +3,17 @@
 
 #include <Eigen/Eigen>
 #include <algorithm>
+#include <array>
 #include <iostream>
+#include <sstream>
 #include <nav_msgs/Path.h>
 #include <sensor_msgs/Imu.h>
 #include <ros/ros.h>
 #include <std_msgs/Empty.h>
+#include <std_msgs/Bool.h>
 #include <std_msgs/Float64.h>
+#include <std_msgs/Float64MultiArray.h>
+#include <std_msgs/String.h>
 #include <vector>
 #include <visualization_msgs/Marker.h>
 
@@ -21,6 +26,8 @@
 #include <traj_utils/planning_visualization.h>
 #include <traj_utils/PolyTraj.h>
 #include <traj_utils/MINCOTraj.h>
+#include <ego_planner/FormationTopologyAck.h>
+#include <ego_planner/FormationTopologyCommand.h>
 
 using std::vector;
 
@@ -64,6 +71,8 @@ namespace ego_planner
     /* parameters */
     int target_type_; // 1 mannual select, 2 hard code
     double no_replan_thresh_, replan_thresh_;
+    double arrival_position_tolerance_{0.30};
+    double arrival_speed_tolerance_{0.15};
     double waypoints_[50][3];
     int form_num_;
     Eigen::MatrixXd formation_;
@@ -73,10 +82,31 @@ namespace ego_planner
     bool flag_realworld_experiment_;
     bool enable_fail_safe_;
     bool flag_escape_emergency_;
+    bool manual_formation_split_;
+    bool general_dynamic_topology_enabled_{false};
+    bool subgroup_route_intent_feedback_enabled_;
+    bool subgroup_route_intent_active_{false};
+    bool dynamic_topology_active_{false};
+    std::vector<int> dynamic_formation_groups_;
+    uint64_t topology_epoch_{0};
+    uint8_t topology_mode_{FormationTopologyCommand::INTACT};
+    std::string topology_components_{"INTACT"};
+    double subgroup_route_intent_angle_{0.0};
+    double subgroup_route_intent_gain_{0.0};
+    double subgroup_route_intent_timeout_{1.0};
+    double subgroup_route_intent_replan_angle_{0.261799};
+    double subgroup_route_intent_replan_gain_step_{0.20};
+    double subgroup_route_intent_replan_interval_{0.5};
+    double split_formation_scale_{-1.0};
+    double split_progress_sync_scale_{-1.0};
+    ros::Time subgroup_route_intent_stamp_;
+    ros::Time subgroup_route_intent_last_replan_;
 
     bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_, touch_goal_, mandatory_stop_;
+    bool first_wall_violation_latched_{false};
     FSM_EXEC_STATE exec_state_;
     int continously_called_times_{0};
+    std::string last_emergency_reason_;
 
     Eigen::Vector3d start_pt_, start_vel_, start_acc_;   // start state
     Eigen::Vector3d end_pt_;                             // goal state
@@ -91,8 +121,9 @@ namespace ego_planner
     /* ROS utils */
     ros::NodeHandle node_;
     ros::Timer exec_timer_, safety_timer_;
-    ros::Subscriber waypoint_sub_, odom_sub_, trigger_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_;
-    ros::Publisher poly_traj_pub_, data_disp_pub_, broadcast_ploytraj_pub_, heartbeat_pub_, ground_height_pub_;
+    ros::Subscriber waypoint_sub_, odom_sub_, trigger_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, manual_split_sub_, dynamic_topology_sub_, topology_command_sub_, split_formation_scale_sub_, split_progress_sync_scale_sub_, subgroup_route_intent_sub_;
+    ros::Publisher poly_traj_pub_, data_disp_pub_, broadcast_ploytraj_pub_, heartbeat_pub_, ground_height_pub_, formation_group_pub_, topology_ack_pub_, subgroup_route_intent_status_pub_, safety_status_pub_, first_wall_violation_pub_;
+    ros::Time last_safety_status_stamp_;
 
     /* state machine functions */
     void execFSMCallback(const ros::TimerEvent &e);
@@ -103,6 +134,14 @@ namespace ego_planner
     /* safety */
     void checkCollisionCallback(const ros::TimerEvent &e);
     bool callEmergencyStop(Eigen::Vector3d stop_pos);
+    void publishSafetyStatus(const int map_occupancy,
+                             const bool wall_guard_violation,
+                             const LocalTrajData *info,
+                             const double trajectory_time);
+    void latchFirstWallViolation(const std::string &source,
+                                 const int map_occupancy,
+                                 const LocalTrajData *info,
+                                 const double trajectory_time);
 
     /* local planning */
     bool callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj);
@@ -117,6 +156,22 @@ namespace ego_planner
 
     /* input-output */
     void mandatoryStopCallback(const std_msgs::Empty &msg);
+    void manualFormationSplitCallback(const std_msgs::Bool::ConstPtr &msg);
+    void dynamicTopologyCallback(const std_msgs::String::ConstPtr &msg);
+    void formationTopologyCommandCallback(
+        const FormationTopologyCommand::ConstPtr &msg);
+    bool parseDynamicTopology(const std::string &text,
+                              std::vector<int> *groups) const;
+    std::string canonicalTopology(const std::vector<int> &groups) const;
+    void publishTopologyAck();
+    void logEffectiveTopology(const std::string &reason) const;
+    int dynamicGroupForDrone(const int drone_id) const;
+    bool dynamicTopologyMatchesLegacySplit() const;
+    void splitFormationScaleCallback(const std_msgs::Float64::ConstPtr &msg);
+    void splitProgressSyncScaleCallback(const std_msgs::Float64::ConstPtr &msg);
+    void subgroupRouteIntentCallback(const std_msgs::Float64MultiArray::ConstPtr &msg);
+    void publishFormationGroupState();
+    void publishSubgroupRouteIntentState(const std::string &state);
     void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
     void triggerCallback(const geometry_msgs::PoseStampedPtr &msg);
     void RecvBroadcastMINCOTrajCallback(const traj_utils::MINCOTrajConstPtr &msg);

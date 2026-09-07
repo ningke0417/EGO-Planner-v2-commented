@@ -1548,7 +1548,11 @@ namespace ego_planner
   {
     if (i_dp <= 0 || i_dp > ConstraintPoints::two_thirds_id(cps_.points, touch_goal_)) // only apply to first 2/3
       return false;
-    if ((int)swarm_trajs_->size() < formation_num_ && drone_id_ != formation_num_-1)
+    // Preserve the original intact-formation startup behavior.  Only the
+    // explicitly enabled manual mode changes formation membership.
+    if (!manual_formation_split_ &&
+        static_cast<int>(swarm_trajs_->size()) < formation_num_ &&
+        drone_id_ != formation_num_ - 1)
       return false;
 
     gradp.setZero();
@@ -1562,6 +1566,188 @@ namespace ego_planner
     Eigen::Vector3d a = (FEnd_ - FStart_).normalized();
     double pt_time = t_now_ + t;
 
+    // In split mode constrain only the relative pose inside each subgroup.
+    // This deliberately leaves the subgroup centroid free to move sideways
+    // around an obstacle.  The intact branch below remains the original
+    // globally anchored formation formulation.
+    if (manual_formation_split_)
+    {
+      Eigen::Vector3d target_position = Eigen::Vector3d::Zero();
+      Eigen::Vector3d target_velocity = Eigen::Vector3d::Zero();
+      int valid_peer_count = 0;
+      for (int id = 0; id < formation_num_; ++id)
+      {
+        bool same_group = (id < formation_num_ / 2) ==
+                          (drone_id_ < formation_num_ / 2);
+        if (dynamic_formation_groups_active_ &&
+            id < static_cast<int>(dynamic_formation_groups_.size()) &&
+            drone_id_ < static_cast<int>(dynamic_formation_groups_.size()))
+        {
+          same_group =
+              dynamic_formation_groups_[id] == dynamic_formation_groups_[drone_id_];
+        }
+        if (!same_group || id == drone_id_ ||
+            id >= static_cast<int>(swarm_trajs_->size()) ||
+            swarm_trajs_->at(id).drone_id != id)
+          continue;
+
+        const double peer_start_time = swarm_trajs_->at(id).start_time;
+        Eigen::Vector3d peer_position, peer_velocity;
+        if (pt_time < peer_start_time + swarm_trajs_->at(id).duration)
+        {
+          peer_position = swarm_trajs_->at(id).traj.getPos(pt_time - peer_start_time);
+          peer_velocity = swarm_trajs_->at(id).traj.getVel(pt_time - peer_start_time);
+        }
+        else
+        {
+          const double exceed_time =
+              pt_time - (peer_start_time + swarm_trajs_->at(id).duration);
+          peer_velocity = swarm_trajs_->at(id).traj.getVel(swarm_trajs_->at(id).duration);
+          peer_position = swarm_trajs_->at(id).traj.getPos(swarm_trajs_->at(id).duration) +
+                          exceed_time * peer_velocity;
+        }
+
+        const Eigen::Vector3d relative_offset =
+            formation_.col(drone_id_) - formation_.col(id);
+        Eigen::Vector3d world_relative_offset;
+        world_relative_offset.x() =
+            a(0) * relative_offset.x() - a(1) * relative_offset.y();
+        world_relative_offset.y() =
+            a(1) * relative_offset.x() + a(0) * relative_offset.y();
+        world_relative_offset.z() =
+            a(2) * relative_offset.x() + relative_offset.z();
+        target_position += peer_position + world_relative_offset;
+        target_velocity += peer_velocity;
+        ++valid_peer_count;
+      }
+
+      bool has_split_cost = false;
+      if (valid_peer_count > 0 && split_subgroup_formation_weight_scale_ > 1e-6)
+      {
+        target_position /= valid_peer_count;
+        target_velocity /= valid_peer_count;
+
+        const double split_formation_weight =
+            wei_formation_ * split_subgroup_formation_weight_scale_;
+        const Eigen::Vector3d dJ_dp = 2 * (p - target_position);
+        costp += split_formation_weight * (dJ_dp / 2).squaredNorm();
+        gradp += split_formation_weight * dJ_dp;
+        gradt += split_formation_weight * dJ_dp.dot(v - target_velocity);
+        grad_prev_t += split_formation_weight * dJ_dp.dot(-target_velocity);
+        has_split_cost = true;
+      }
+
+      // Weak longitudinal synchronization during split.  A deadband leaves
+      // normally progressing subgroups uncoupled; only a meaningful lead/lag
+      // receives a smooth quadratic restoring cost.
+      if (split_progress_sync_weight_scale_ > 1e-6)
+      {
+        int sync_peer_count = 0;
+        for (int id = 0; id < formation_num_; ++id)
+        {
+          if (id == drone_id_ ||
+              id >= static_cast<int>(swarm_trajs_->size()) ||
+              swarm_trajs_->at(id).drone_id != id)
+            continue;
+
+          const double peer_start_time = swarm_trajs_->at(id).start_time;
+          Eigen::Vector3d peer_position, peer_velocity;
+          if (pt_time < peer_start_time + swarm_trajs_->at(id).duration)
+          {
+            peer_position =
+                swarm_trajs_->at(id).traj.getPos(pt_time - peer_start_time);
+            peer_velocity =
+                swarm_trajs_->at(id).traj.getVel(pt_time - peer_start_time);
+          }
+          else
+          {
+            const double exceed_time =
+                pt_time - (peer_start_time + swarm_trajs_->at(id).duration);
+            peer_velocity =
+                swarm_trajs_->at(id).traj.getVel(swarm_trajs_->at(id).duration);
+            peer_position =
+                swarm_trajs_->at(id).traj.getPos(swarm_trajs_->at(id).duration) +
+                exceed_time * peer_velocity;
+          }
+
+          const double desired_progress_offset =
+              formation_(0, drone_id_) - formation_(0, id);
+          const double progress_error =
+              (p - peer_position).dot(a) - desired_progress_offset;
+          const double progress_excess =
+              std::fabs(progress_error) - split_progress_sync_deadband_;
+          if (progress_excess <= 0.0)
+            continue;
+          const double signed_excess =
+              std::copysign(progress_excess, progress_error);
+          const double weight = wei_formation_ *
+                                split_progress_sync_weight_scale_ /
+                                static_cast<double>(formation_num_ - 1);
+          const Eigen::Vector3d progress_grad =
+              2.0 * weight * signed_excess * a;
+          costp += weight * signed_excess * signed_excess;
+          gradp += progress_grad;
+          gradt += progress_grad.dot(v - peer_velocity);
+          grad_prev_t += progress_grad.dot(-peer_velocity);
+          ++sync_peer_count;
+        }
+        has_split_cost = has_split_cost || sync_peer_count > 0;
+      }
+
+      if (split_side_guidance_enabled_ && formation_num_ == 4)
+      {
+        // Keep the side already encoded by the formation's lateral offsets.
+        // For the square formation this locks {0,2} and {1,3} to opposite
+        // sides even when the criterion further fragments either component.
+        const double desired_side =
+            formation_(1, drone_id_) < 0.0 ? -1.0 : 1.0;
+        const double signed_margin =
+            desired_side * (p.y() - split_side_guidance_center_y_);
+        const double violation = split_side_guidance_margin_ - signed_margin;
+        if (violation > 0.0)
+        {
+          costp += split_side_guidance_weight_ * violation * violation;
+          Eigen::Vector3d side_grad = Eigen::Vector3d::Zero();
+          side_grad.y() =
+              -2.0 * split_side_guidance_weight_ * desired_side * violation;
+          gradp += side_grad;
+          gradt += side_grad.dot(v);
+          has_split_cost = true;
+        }
+      }
+
+      // Optional dynamic subgroup route intent.  Unlike the legacy side
+      // guidance above, this corridor is defined by a locally selected free
+      // direction and the vehicle's current position.  It contains no wall
+      // centre/end-point or preassigned left/right route.  Obstacle and swarm
+      // collision costs remain dominant and may bend the trajectory away from
+      // the soft corridor when required.
+      if (subgroup_route_intent_active_)
+      {
+        Eigen::Vector3d lateral_normal(-subgroup_route_intent_direction_.y(),
+                                       subgroup_route_intent_direction_.x(), 0.0);
+        const double lateral =
+            lateral_normal.dot(p - subgroup_route_intent_origin_);
+        const double excess =
+            std::fabs(lateral) - subgroup_route_intent_corridor_half_width_;
+        if (excess > 0.0)
+        {
+          const double sign = lateral >= 0.0 ? 1.0 : -1.0;
+          const double effective_weight =
+              subgroup_route_intent_weight_ * subgroup_route_intent_gain_;
+          const Eigen::Vector3d route_grad =
+              2.0 * effective_weight * excess * sign *
+              lateral_normal;
+          costp += effective_weight * excess * excess;
+          gradp += route_grad;
+          gradt += route_grad.dot(v);
+          has_split_cost = true;
+        }
+      }
+      return has_split_cost;
+    }
+
+    // Original intact-formation cost.
     double l = 0, dl_dt = 0;
     int id_end = drone_id_ == (formation_num_-1) ? formation_num_ -1 : formation_num_;
     for (int id = 0; id < id_end; ++id)
@@ -1714,6 +1900,26 @@ namespace ego_planner
     nh.param("optimization/max_acc", max_acc_, -1.0);
 
     nh.param("formation/num", formation_num_, -1);
+    nh.param("formation/split_side_guidance_enabled",
+             split_side_guidance_enabled_, false);
+    nh.param("formation/split_side_guidance_weight",
+             split_side_guidance_weight_, 600.0);
+    nh.param("formation/split_side_guidance_margin",
+             split_side_guidance_margin_, 0.35);
+    nh.param("formation/split_side_guidance_center_y",
+             split_side_guidance_center_y_, 0.0);
+    nh.param("formation/split_subgroup_formation_weight_scale",
+             split_subgroup_formation_weight_scale_, 1.0);
+    nh.param("formation/split_progress_sync_weight_scale",
+             split_progress_sync_weight_scale_, 0.0);
+    nh.param("formation/split_progress_sync_deadband",
+             split_progress_sync_deadband_, 0.6);
+    split_progress_sync_deadband_ =
+        std::max(0.0, split_progress_sync_deadband_);
+    nh.param("formation/subgroup_route_intent_weight",
+             subgroup_route_intent_weight_, 80.0);
+    nh.param("formation/subgroup_route_intent_corridor_half_width",
+             subgroup_route_intent_corridor_half_width_, 0.25);
     formation_.resize(3, formation_num_);
     for (int i = 0; i < formation_num_; i++)
     {
@@ -1739,6 +1945,57 @@ namespace ego_planner
   void PolyTrajOptimizer::setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr) { swarm_trajs_ = swarm_trajs_ptr; }
 
   void PolyTrajOptimizer::setDroneId(const int drone_id) { drone_id_ = drone_id; }
+
+  void PolyTrajOptimizer::setManualFormationSplit(const bool enabled)
+  {
+    manual_formation_split_ = enabled;
+    if (!enabled)
+    {
+      dynamic_formation_groups_active_ = false;
+      dynamic_formation_groups_.clear();
+      subgroup_route_intent_active_ = false;
+      subgroup_route_intent_gain_ = 0.0;
+    }
+  }
+
+  void PolyTrajOptimizer::setDynamicFormationGroups(const std::vector<int> &groups)
+  {
+    dynamic_formation_groups_ = groups;
+    dynamic_formation_groups_active_ =
+        manual_formation_split_ &&
+        static_cast<int>(dynamic_formation_groups_.size()) >= formation_num_;
+  }
+
+  void PolyTrajOptimizer::setSplitSubgroupFormationWeightScale(const double scale)
+  {
+    split_subgroup_formation_weight_scale_ = std::max(0.0, scale);
+  }
+
+  void PolyTrajOptimizer::setSplitProgressSyncWeightScale(const double scale)
+  {
+    split_progress_sync_weight_scale_ = std::max(0.0, scale);
+  }
+
+  void PolyTrajOptimizer::setSubgroupRouteIntent(
+      const bool active, const Eigen::Vector3d &origin,
+      const Eigen::Vector3d &direction, const double gain)
+  {
+    subgroup_route_intent_gain_ = std::max(0.0, std::min(1.0, gain));
+    subgroup_route_intent_active_ =
+        active && manual_formation_split_ && subgroup_route_intent_gain_ > 1e-3;
+    subgroup_route_intent_origin_ = origin;
+    subgroup_route_intent_direction_ = direction;
+    subgroup_route_intent_direction_.z() = 0.0;
+    const double norm = subgroup_route_intent_direction_.norm();
+    if (norm < 1e-6)
+    {
+      subgroup_route_intent_active_ = false;
+      subgroup_route_intent_gain_ = 0.0;
+      subgroup_route_intent_direction_ = Eigen::Vector3d::UnitX();
+      return;
+    }
+    subgroup_route_intent_direction_ /= norm;
+  }
 
   void PolyTrajOptimizer::setIfTouchGoal(const bool touch_goal) { touch_goal_ = touch_goal; }
 

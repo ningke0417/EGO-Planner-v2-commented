@@ -11,12 +11,15 @@ ros::Publisher  _odom_pub;
 
 quadrotor_msgs::PositionCommand _cmd;
 double _init_x, _init_y, _init_z;
+double _command_timeout;
+ros::Time _last_cmd_time;
 
 bool rcv_cmd = false;
 void rcvPosCmdCallBack(const quadrotor_msgs::PositionCommand cmd)
-{	
+{
 	rcv_cmd = true;
 	_cmd    = cmd;
+	_last_cmd_time = ros::Time::now();
 }
 
 void pubOdom()
@@ -27,6 +30,8 @@ void pubOdom()
 
 	if(rcv_cmd)
 	{
+		const bool command_fresh = _command_timeout <= 0.0 ||
+			(ros::Time::now() - _last_cmd_time).toSec() <= _command_timeout;
 	    odom.pose.pose.position.x = _cmd.position.x;
 	    odom.pose.pose.position.y = _cmd.position.y;
 	    odom.pose.pose.position.z = _cmd.position.z;
@@ -47,13 +52,19 @@ void pubOdom()
 	    odom.pose.pose.orientation.y = q.y();
 	    odom.pose.pose.orientation.z = q.z();
 
-	    odom.twist.twist.linear.x = _cmd.velocity.x;
-	    odom.twist.twist.linear.y = _cmd.velocity.y;
-	    odom.twist.twist.linear.z = _cmd.velocity.z;
+	    odom.twist.twist.linear.x = command_fresh ? _cmd.velocity.x : 0.0;
+	    odom.twist.twist.linear.y = command_fresh ? _cmd.velocity.y : 0.0;
+	    odom.twist.twist.linear.z = command_fresh ? _cmd.velocity.z : 0.0;
 
-	    odom.twist.twist.angular.x = _cmd.acceleration.x;
-	    odom.twist.twist.angular.y = _cmd.acceleration.y;
-	    odom.twist.twist.angular.z = _cmd.acceleration.z;
+	    odom.twist.twist.angular.x = command_fresh ? _cmd.acceleration.x : 0.0;
+	    odom.twist.twist.angular.y = command_fresh ? _cmd.acceleration.y : 0.0;
+	    odom.twist.twist.angular.z = command_fresh ? _cmd.acceleration.z : 0.0;
+
+		if (!command_fresh)
+		{
+			ROS_WARN_THROTTLE(1.0,
+				"[poscmd_2_odom] Position command timed out; holding position with zero velocity.");
+		}
 	}
 	else
 	{
@@ -86,6 +97,7 @@ int main (int argc, char** argv)
     nh.param("init_x", _init_x,  0.0);
     nh.param("init_y", _init_y,  0.0);
     nh.param("init_z", _init_z,  0.0);
+	nh.param("command_timeout", _command_timeout, 0.2);
 
     _cmd_sub  = nh.subscribe( "command", 1, rcvPosCmdCallBack );
     _odom_pub = nh.advertise<nav_msgs::Odometry>("odometry", 1);                      

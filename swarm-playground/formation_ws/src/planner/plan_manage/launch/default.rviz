@@ -237,6 +237,70 @@ Visualization Manager:
       Plane Cell Count: 1000
       Reference Frame: <Fixed Frame>
       Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /starconvex_shadow_4uav/markers
+      Name: four_uav_starconvex_shadow
+      Namespaces:
+        four_uav_backend_edges: true
+        four_uav_shadow_edges: true
+        four_uav_shadow_scores: true
+        four_uav_shadow_state: true
+      Queue Size: 10
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /starconvex_shadow_6uav/markers
+      Name: six_uav_starconvex_criterion
+      Namespaces:
+        six_uav_criterion_edges: true
+        six_uav_criterion_scores: true
+        six_uav_criterion_state: true
+      Queue Size: 10
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /formation_backend_visualizer_6uav/markers
+      Name: six_uav_backend_topology
+      Namespaces:
+        six_uav_backend_connected_edges: true
+        six_uav_backend_cut_edges: true
+        six_uav_backend_edge_labels: true
+        six_uav_backend_group_halos: true
+        six_uav_backend_group_labels: true
+        six_uav_backend_state: true
+        six_uav_backend_unknown_edges: true
+      Queue Size: 10
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /formation_backend/markers
+      Name: formation_backend_topology
+      Namespaces:
+        formation_backend_edges: true
+        formation_backend_pair_distance: true
+        formation_backend_state: true
+      Queue Size: 10
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /subgroup_route_intent_4uav/markers
+      Name: subgroup_route_intent_shadow
+      Namespaces:
+        route_intent_coordinated: true
+        route_intent_local_best: true
+        route_intent_text: true
+      Queue Size: 10
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /map_generator/wall_geometry
+      Name: wall_and_guard_geometry
+      Namespaces:
+        inflated_wall_guard: true
+        physical_wall: true
+      Queue Size: 2
+      Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:

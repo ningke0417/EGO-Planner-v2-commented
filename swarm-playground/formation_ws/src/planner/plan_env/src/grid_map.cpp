@@ -598,8 +598,10 @@ void GridMap::clearAndInflateLocalMap()
     }
 
   // inflate occupied voxels to compensate robot size
-//下面一句可能有bug,见github Issues
-  int inf_step = ceil(mp_.obstacles_inflation_ - 0.001 / mp_.resolution_) + 1; // plus 1 for safety since we use "getLessInflateOccupancy()"
+  // obstacles_inflation_ is expressed in metres.  Convert it to a conservative
+  // number of voxels; the old expression mixed metres and voxel counts.
+  int inf_step = std::max(0, static_cast<int>(
+                                 ceil(mp_.obstacles_inflation_ / mp_.resolution_)));
   if ( inf_step > 4 )
   {
     ROS_ERROR( "Inflation is too big, which will cause siginificant computation! Reduce inflation or enlarge resolution." );
@@ -794,7 +796,10 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
   pcl::PointXYZ pt;
   Eigen::Vector3d p3d, p3d_inf;
 
-  int inf_step = ceil(mp_.obstacles_inflation_ - 0.001 / mp_.resolution_) + 1; // plus 1 for safety since we use "getLessInflateOccupancy()"
+  // Keep point-cloud and depth-map inflation identical.  Rounding upward makes
+  // the represented safety boundary no smaller than the requested distance.
+  int inf_step = std::max(0, static_cast<int>(
+                                 ceil(mp_.obstacles_inflation_ / mp_.resolution_)));
   if ( inf_step > 4 )
   {
     ROS_ERROR( "Inflation is too big, which will cause siginificant computation! Reduce inflation or enlarge resolution." );

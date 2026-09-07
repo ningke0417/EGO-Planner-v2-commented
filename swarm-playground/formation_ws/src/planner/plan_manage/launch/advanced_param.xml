@@ -34,6 +34,46 @@
     <arg name="use_distinctive_trajs"/>
     <arg name="obj_num_set"/>
     <arg name="drone_id"/>
+    <arg name="obstacles_inflation" default="0.0"/>
+    <arg name="obstacle_clearance" default="0.1"/>
+    <arg name="manual_formation_split" default="false"/>
+    <arg name="general_dynamic_topology_enabled" default="false"/>
+    <arg name="split_side_guidance_enabled" default="false"/>
+    <arg name="split_side_guidance_weight" default="600.0"/>
+    <arg name="split_side_guidance_margin" default="0.35"/>
+    <arg name="split_side_guidance_center_y" default="0.0"/>
+    <arg name="split_subgroup_formation_weight_scale" default="1.0"/>
+    <arg name="split_progress_sync_weight_scale" default="0.0"/>
+    <arg name="split_progress_sync_deadband" default="0.6"/>
+    <arg name="subgroup_route_intent_feedback_enabled" default="false"/>
+    <arg name="subgroup_route_intent_weight" default="80.0"/>
+    <arg name="subgroup_route_intent_corridor_half_width" default="0.25"/>
+    <arg name="formation_weight" default="100"/>
+    <arg name="use_wall_collision_guard" default="false"/>
+    <arg name="wall_x" default="0.0"/>
+    <arg name="wall_y" default="0.0"/>
+    <arg name="wall_size_x" default="0.0"/>
+    <arg name="wall_size_y" default="0.0"/>
+    <arg name="wall_safety_distance" default="0.0"/>
+    <arg name="wall_guard_check_horizon" default="3.0"/>
+    <arg name="formation_num" default="7"/>
+    <arg name="formation_start_x" default="-32.0"/>
+    <arg name="formation_start_y" default="0.0"/>
+    <arg name="formation_start_z" default="1.0"/>
+    <arg name="formation_drone0_x" default="1.0"/>
+    <arg name="formation_drone0_y" default="-0.5"/>
+    <arg name="formation_drone1_x" default="1.0"/>
+    <arg name="formation_drone1_y" default="0.5"/>
+    <arg name="formation_drone2_x" default="0.0"/>
+    <arg name="formation_drone2_y" default="-1.0"/>
+    <arg name="formation_drone3_x" default="0.0"/>
+    <arg name="formation_drone3_y" default="0.0"/>
+    <arg name="formation_drone4_x" default="0.0"/>
+    <arg name="formation_drone4_y" default="1.0"/>
+    <arg name="formation_drone5_x" default="-1.0"/>
+    <arg name="formation_drone5_y" default="-0.5"/>
+    <arg name="formation_drone6_x" default="-1.0"/>
+    <arg name="formation_drone6_y" default="0.5"/>
     <!-- main node -->
     <!-- <node pkg="ego_planner" name="ego_planner_node" type="ego_planner_node" output="screen" launch-prefix="valgrind"> -->
     <node pkg="ego_planner" name="drone_$(arg drone_id)_ego_planner_node" type="ego_planner_node" output="screen">
@@ -52,6 +92,8 @@
         <param name="fsm/flight_type" value="$(arg flight_type)" type="int"/>
         <param name="fsm/thresh_replan_time" value="1.0" type="double"/>
         <param name="fsm/thresh_no_replan_meter" value="1.0" type="double"/>
+        <param name="fsm/arrival_position_tolerance" value="0.30" type="double"/>
+        <param name="fsm/arrival_speed_tolerance" value="0.15" type="double"/>
         <param name="fsm/planning_horizon" value="$(arg planning_horizon)" type="double"/>
         <!--always set to 1.5 times grater than sensing horizen-->
         <param name="fsm/emergency_time" value="1.0" type="double"/>
@@ -80,7 +122,7 @@
         <param name="grid_map/local_update_range_x" value="5.5" />
         <param name="grid_map/local_update_range_y" value="5.5" />
         <param name="grid_map/local_update_range_z" value="4.5" />
-        <param name="grid_map/obstacles_inflation" value="0.0" />
+        <param name="grid_map/obstacles_inflation" value="$(arg obstacles_inflation)" type="double"/>
         <param name="grid_map/local_map_margin" value="10"/>
         <param name="grid_map/ground_height" value="-0.01"/>
         <!-- camera parameter -->
@@ -116,16 +158,23 @@
         <param name="manager/planning_horizon" value="$(arg planning_horizon)" type="double"/>
         <param name="manager/use_distinctive_trajs" value="$(arg use_distinctive_trajs)" type="bool"/>
         <param name="manager/drone_id" value="$(arg drone_id)"/>
+        <param name="manager/use_wall_collision_guard" value="$(arg use_wall_collision_guard)" type="bool"/>
+        <param name="manager/wall_x" value="$(arg wall_x)" type="double"/>
+        <param name="manager/wall_y" value="$(arg wall_y)" type="double"/>
+        <param name="manager/wall_size_x" value="$(arg wall_size_x)" type="double"/>
+        <param name="manager/wall_size_y" value="$(arg wall_size_y)" type="double"/>
+        <param name="manager/wall_safety_distance" value="$(arg wall_safety_distance)" type="double"/>
+        <param name="manager/wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)" type="double"/>
         <!-- trajectory optimization -->
-        <param name="optimization/constraint_points_perPiece" value="5" type="int"/>
+        <param name="optimization/constraint_points_perPiece" value="8" type="int"/>
         <param name="optimization/weight_obstacle" value="10000.0" type="double"/>
-        <param name="optimization/weight_obstacle_soft" value="5000.0" type="double"/>
+        <param name="optimization/weight_obstacle_soft" value="10000.0" type="double"/>
         <param name="optimization/weight_swarm" value="10000.0" type="double"/>
         <param name="optimization/weight_feasibility" value="10000.0" type="double"/>
         <param name="optimization/weight_sqrvariance" value="10000.0" type="double"/>
         <param name="optimization/weight_time" value="10.0" type="double"/>
-        <param name="optimization/weight_formation" value="100" type="double"/>
-        <param name="optimization/obstacle_clearance" value="0.1" type="double"/>
+        <param name="optimization/weight_formation" value="$(arg formation_weight)" type="double"/>
+        <param name="optimization/obstacle_clearance" value="$(arg obstacle_clearance)" type="double"/>
         <param name="optimization/obstacle_clearance_soft" value="0.5" type="double"/>
         <param name="optimization/swarm_clearance" value="0.5" type="double"/>
         <param name="optimization/max_vel" value="$(arg max_vel)" type="double"/>
@@ -133,14 +182,30 @@
         <param name="optimization/max_jer" value="$(arg max_jer)" type="double"/>
         <param name="optimization/record_opt" value="true"/>
         <!-- formation-->
-        <param name="formation/num" value="7"/>
-        <rosparam param="formation/start">[-32,0,1]</rosparam>
-        <rosparam param="formation/drone0">[  1, -0.5, 0]</rosparam>
-        <rosparam param="formation/drone1">[  1,  0.5, 0]</rosparam>
-        <rosparam param="formation/drone2">[  0, -1.0, 0]</rosparam>
-        <rosparam param="formation/drone3">[  0,  0.0, 0]</rosparam>
-        <rosparam param="formation/drone4">[  0,  1.0, 0]</rosparam>
-        <rosparam param="formation/drone5">[ -1, -0.5, 0]</rosparam>
-        <rosparam param="formation/drone6">[ -1,  0.5, 0]</rosparam>
+        <param name="formation/num" value="$(arg formation_num)" type="int"/>
+        <param name="formation/manual_split" value="$(arg manual_formation_split)" type="bool"/>
+        <param name="formation/general_dynamic_topology_enabled" value="$(arg general_dynamic_topology_enabled)" type="bool"/>
+        <param name="formation/split_side_guidance_enabled" value="$(arg split_side_guidance_enabled)" type="bool"/>
+        <param name="formation/split_side_guidance_weight" value="$(arg split_side_guidance_weight)" type="double"/>
+        <param name="formation/split_side_guidance_margin" value="$(arg split_side_guidance_margin)" type="double"/>
+        <param name="formation/split_side_guidance_center_y" value="$(arg split_side_guidance_center_y)" type="double"/>
+        <param name="formation/split_subgroup_formation_weight_scale" value="$(arg split_subgroup_formation_weight_scale)" type="double"/>
+        <param name="formation/split_progress_sync_weight_scale" value="$(arg split_progress_sync_weight_scale)" type="double"/>
+        <param name="formation/split_progress_sync_deadband" value="$(arg split_progress_sync_deadband)" type="double"/>
+        <param name="formation/subgroup_route_intent_feedback_enabled" value="$(arg subgroup_route_intent_feedback_enabled)" type="bool"/>
+        <param name="formation/subgroup_route_intent_weight" value="$(arg subgroup_route_intent_weight)" type="double"/>
+        <param name="formation/subgroup_route_intent_corridor_half_width" value="$(arg subgroup_route_intent_corridor_half_width)" type="double"/>
+        <param name="formation/subgroup_route_intent_timeout" value="1.0" type="double"/>
+        <param name="formation/subgroup_route_intent_replan_angle" value="0.261799" type="double"/>
+        <param name="formation/subgroup_route_intent_replan_gain_step" value="0.20" type="double"/>
+        <param name="formation/subgroup_route_intent_replan_interval" value="0.5" type="double"/>
+        <rosparam subst_value="true" param="formation/start">[$(arg formation_start_x), $(arg formation_start_y), $(arg formation_start_z)]</rosparam>
+        <rosparam subst_value="true" param="formation/drone0">[$(arg formation_drone0_x), $(arg formation_drone0_y), 0]</rosparam>
+        <rosparam subst_value="true" param="formation/drone1">[$(arg formation_drone1_x), $(arg formation_drone1_y), 0]</rosparam>
+        <rosparam subst_value="true" param="formation/drone2">[$(arg formation_drone2_x), $(arg formation_drone2_y), 0]</rosparam>
+        <rosparam subst_value="true" param="formation/drone3">[$(arg formation_drone3_x), $(arg formation_drone3_y), 0]</rosparam>
+        <rosparam subst_value="true" param="formation/drone4">[$(arg formation_drone4_x), $(arg formation_drone4_y), 0]</rosparam>
+        <rosparam subst_value="true" param="formation/drone5">[$(arg formation_drone5_x), $(arg formation_drone5_y), 0]</rosparam>
+        <rosparam subst_value="true" param="formation/drone6">[$(arg formation_drone6_x), $(arg formation_drone6_y), 0]</rosparam>
     </node>
 </launch>

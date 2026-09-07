@@ -173,6 +173,7 @@ void cmdCallback(const ros::TimerEvent &e)
 
     receive_traj_ = false;
     publish_cmd(last_pos_, Vector3d::Zero(), Vector3d::Zero(), Vector3d::Zero(), last_yaw_, 0);
+    return;
   }
 
   double t_cur = (time_now - start_time_).toSec();
@@ -202,18 +203,14 @@ void cmdCallback(const ros::TimerEvent &e)
     // publish
     publish_cmd(pos, vel, acc, jer, yaw_yawdot.first, yaw_yawdot.second);
   }
-  // else if (t_cur >= traj_duration_)
-  // {
-  //   /* hover when finish traj_ */
-  //   pos = traj_->getPos(traj_duration_);
-  //   vel.setZero();
-  //   acc.setZero();
-
-  //   yaw_yawdot.first = last_yaw_;
-  //   yaw_yawdot.second = 0;
-
-  //   pos_f = pos;
-  // }
+  else if (t_cur >= traj_duration_)
+  {
+    // Keep publishing a zero-velocity endpoint. Otherwise downstream odometry
+    // simulators retain the final moving command after a trajectory expires.
+    pos = traj_->getPos(traj_duration_);
+    publish_cmd(pos, Vector3d::Zero(), Vector3d::Zero(), Vector3d::Zero(),
+                last_yaw_, 0.0);
+  }
   // else
   // {
   //   std::cout << "[Traj server]: invalid time." << std::endl;

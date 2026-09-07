@@ -9,3 +9,15 @@ This work was born out of [MINCO](https://github.com/ZJU-FAST-Lab/GCOPTER).
 If you find it interesting, please give both repos stars generously. Thanks.
 
 <img src="images/cover.jpg" alt="drawing" width="400"/>
+roslaunch ego_planner formation_4uav_criterion_no_split_wall.launch rviz:=true 
+cd /home/robot/Codes/EGO-Planner-criterion-validation/swarm-playground/formation_ws
+source devel/setup.zsh
+roslaunch ego_planner formation_4uav_criterion_auto_split_wall.launch rviz:=true
+cd /home/robot/Codes/EGO-Planner-criterion-validation/swarm-playground/formation_ws
+source devel/setup.zsh
+roslaunch ego_planner formation_6uav_no_split_wall.launch rviz:=true
+cd /home/robot/Codes/EGO-Planner-criterion-validation
+source /opt/ros/noetic/setup.zsh
+source swarm-playground/formation_ws/devel/setup.zsh
+
+roslaunch ego_planner formation_6uav_criterion_auto_split_wall.launch

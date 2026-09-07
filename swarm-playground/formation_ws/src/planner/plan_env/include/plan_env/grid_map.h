@@ -174,6 +174,7 @@ public:
   inline int getOccupancy(Eigen::Vector3d pos);
   inline int getOccupancy(Eigen::Vector3i id);
   inline int getInflateOccupancy(Eigen::Vector3d pos);
+  inline int getInflateOccupancyByIndex(Eigen::Vector3i id);
   inline int getLessInflateOccupancy(Eigen::Vector3d pos);
 
   inline void boundIndex(Eigen::Vector3i &id);
@@ -358,6 +359,14 @@ inline int GridMap::getInflateOccupancy(Eigen::Vector3d pos)
 
   Eigen::Vector3i id;
   posToIndex(pos, id);
+
+  return int(md_.occupancy_buffer_inflate_[toAddress(id)]);
+}
+
+inline int GridMap::getInflateOccupancyByIndex(Eigen::Vector3i id)
+{
+  if (!isInMap(id))
+    return -1;
 
   return int(md_.occupancy_buffer_inflate_[toAddress(id)]);
 }
