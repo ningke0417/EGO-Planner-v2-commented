@@ -18,6 +18,11 @@
     <arg name="safety_distance" default="0.2"/>
     <arg name="wall_guard_check_horizon" default="3.0"/>
     <arg name="formation_weight" default="100"/>
+    <arg name="initial_assignment_enabled" default="true"/>
+    <arg name="merge_sync_enabled" default="true"/>
+    <arg name="merge_sync_duration" default="20.0"/>
+    <arg name="merge_sync_backtrack_tolerance" default="0.03"/>
+    <arg name="merge_sync_weight" default="1000.0"/>
 
     <include file="$(find ego_planner)/launch/run_in_sim.launch">
         <arg name="drone_id" value="$(arg drone_id)"/>
@@ -47,8 +52,13 @@
         <arg name="split_side_guidance_enabled" value="false"/>
         <arg name="split_subgroup_formation_weight_scale" value="0.15"/>
         <arg name="split_progress_sync_weight_scale" value="0.0"/>
+        <arg name="merge_sync_enabled" value="$(arg merge_sync_enabled)"/>
+        <arg name="merge_sync_duration" value="$(arg merge_sync_duration)"/>
+        <arg name="merge_sync_backtrack_tolerance" value="$(arg merge_sync_backtrack_tolerance)"/>
+        <arg name="merge_sync_weight" value="$(arg merge_sync_weight)"/>
         <arg name="subgroup_route_intent_feedback_enabled" value="false"/>
         <arg name="formation_weight" value="$(arg formation_weight)"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
 
         <arg name="formation_num" value="6"/>
         <arg name="formation_start_x" value="$(arg start_x)"/>

@@ -42,6 +42,7 @@
     <arg name="subgroup_route_intent_feedback_enabled" default="false"/>
     <arg name="subgroup_route_intent_show_debug_text" default="false"/>
     <arg name="formation_weight" default="100"/>
+    <arg name="initial_assignment_enabled" default="true"/>
     <!-- Temporarily disable the preset left/right assignment.  Keep the
          argument exposed so it can still be enabled explicitly for ablations. -->
     <arg name="split_side_guidance_enabled" default="false"/>
@@ -113,6 +114,7 @@
         <arg name="subgroup_route_intent_corridor_half_width" value="0.25"/>
         <arg name="subgroup_route_intent_show_debug_text" value="$(arg subgroup_route_intent_show_debug_text)"/>
         <arg name="formation_weight" value="$(arg formation_weight)"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
         <arg name="manual_split" value="false"/>
         <arg name="enable_auto_split" value="true"/>
     </include>

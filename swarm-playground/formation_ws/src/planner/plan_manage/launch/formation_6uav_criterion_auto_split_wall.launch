@@ -9,7 +9,7 @@
     <arg name="odom_topic" default="visual_slam/odom"/>
     <arg name="start_x" default="-6.0"/>
     <arg name="goal_x" default="10.0"/>
-    <arg name="wall_x" default="-1.0"/>
+    <arg name="wall_x" default="-2.0"/>
     <arg name="wall_y" default="0.0"/>
     <arg name="wall_size_x" default="0.5"/>
     <!-- Split/merge course: a short solid wall followed by a long wall with
@@ -25,6 +25,9 @@
     <arg name="split_threshold" default="0.34"/>
     <arg name="hard_split_threshold" default="0.20"/>
     <arg name="merge_threshold" default="0.70"/>
+    <arg name="distance_split_threshold" default="1.8"/>
+    <arg name="hard_distance_split_threshold" default="2.5"/>
+    <arg name="distance_merge_threshold" default="1.7"/>
     <arg name="criterion_publish_rate" default="20.0"/>
     <arg name="rear_split_propagation_enabled" default="true"/>
     <arg name="rear_split_propagation_factor" default="1.3"/>
@@ -37,11 +40,22 @@
     <arg name="auto_merge_enabled" default="true"/>
     <arg name="merge_after_wall_margin" default="1.5"/>
     <arg name="merge_max_edge_distance" default="3.0"/>
-    <arg name="merge_ready_persistence" default="0.5"/>
+    <arg name="merge_ready_persistence" default="0.3"/>
     <arg name="weak_reconnect_enabled" default="true"/>
-    <arg name="weak_reconnect_ready_persistence" default="0.5"/>
+    <arg name="weak_reconnect_ready_persistence" default="0.3"/>
     <arg name="weak_reconnect_visibility_threshold" default="1.0"/>
-    <arg name="weak_reconnect_formation_weight_scale" default="0.15"/>
+    <arg name="weak_reconnect_max_edge_distance" default="3.0"/>
+    <arg name="weak_reconnect_formation_weight_scale" default="0.22"/>
+    <arg name="weak_reconnect_mid_formation_weight_scale" default="0.25"/>
+    <arg name="weak_reconnect_final_formation_weight_scale" default="0.30"/>
+    <arg name="weak_reconnect_ramp_step_duration" default="0.5"/>
+    <arg name="initial_assignment_enabled" default="true"/>
+    <!-- Reconnected leading rows wait/crawl for lagging rows instead of
+         flying backwards to restore the 2x3 formation. -->
+    <arg name="merge_sync_enabled" default="true"/>
+    <arg name="merge_sync_duration" default="20.0"/>
+    <arg name="merge_sync_backtrack_tolerance" default="0.03"/>
+    <arg name="merge_sync_weight" default="1000.0"/>
 
     <include file="$(find swarm_bridge)/launch/bridge_udp.launch">
         <arg name="drone_id" value="999"/>
@@ -83,6 +97,9 @@
         <param name="split_threshold" value="$(arg split_threshold)" type="double"/>
         <param name="hard_split_threshold" value="$(arg hard_split_threshold)" type="double"/>
         <param name="merge_threshold" value="$(arg merge_threshold)" type="double"/>
+        <param name="distance_split_threshold" value="$(arg distance_split_threshold)" type="double"/>
+        <param name="hard_distance_split_threshold" value="$(arg hard_distance_split_threshold)" type="double"/>
+        <param name="distance_merge_threshold" value="$(arg distance_merge_threshold)" type="double"/>
         <param name="persistence_distance" value="0.05" type="double"/>
         <param name="rear_split_propagation_enabled" value="$(arg rear_split_propagation_enabled)" type="bool"/>
         <param name="rear_split_propagation_factor" value="$(arg rear_split_propagation_factor)" type="double"/>
@@ -97,6 +114,7 @@
         <param name="split_ready_persistence" value="$(arg split_ready_persistence)" type="double"/>
         <param name="topology_change_persistence" value="$(arg topology_change_persistence)" type="double"/>
         <param name="secondary_hard_split_threshold" value="$(arg secondary_hard_split_threshold)" type="double"/>
+        <param name="secondary_distance_split_threshold" value="$(arg distance_split_threshold)" type="double"/>
         <param name="auto_merge_enabled" value="$(arg auto_merge_enabled)" type="bool"/>
         <param name="merge_wall_x" value="$(arg wall_x)" type="double"/>
         <param name="merge_wall_half_x" value="$(eval 0.5 * float(arg('wall_size_x')))" type="double"/>
@@ -106,7 +124,11 @@
         <param name="weak_reconnect_enabled" value="$(arg weak_reconnect_enabled)" type="bool"/>
         <param name="weak_reconnect_ready_persistence" value="$(arg weak_reconnect_ready_persistence)" type="double"/>
         <param name="weak_reconnect_visibility_threshold" value="$(arg weak_reconnect_visibility_threshold)" type="double"/>
+        <param name="weak_reconnect_max_edge_distance" value="$(arg weak_reconnect_max_edge_distance)" type="double"/>
         <param name="weak_reconnect_formation_weight_scale" value="$(arg weak_reconnect_formation_weight_scale)" type="double"/>
+        <param name="weak_reconnect_mid_formation_weight_scale" value="$(arg weak_reconnect_mid_formation_weight_scale)" type="double"/>
+        <param name="weak_reconnect_final_formation_weight_scale" value="$(arg weak_reconnect_final_formation_weight_scale)" type="double"/>
+        <param name="weak_reconnect_ramp_step_duration" value="$(arg weak_reconnect_ramp_step_duration)" type="double"/>
         <param name="split_formation_weight_scale" value="$(arg split_formation_weight_scale)" type="double"/>
         <param name="split_progress_sync_weight_scale" value="0.0" type="double"/>
         <param name="ack_timeout" value="2.0" type="double"/>
@@ -121,33 +143,65 @@
         <param name="publish_rate" value="10.0" type="double"/>
     </node>
 
+    <node if="$(arg initial_assignment_enabled)"
+          pkg="ego_planner" type="initial_formation_assignment_6uav_node"
+          name="initial_formation_assignment_6uav" output="screen" required="true">
+        <param name="odom_topic_suffix" value="$(arg odom_topic)"/>
+        <param name="settle_duration" value="0.5" type="double"/>
+        <param name="odom_timeout" value="2.0" type="double"/>
+        <param name="reassignment_interval" value="0.5" type="double"/>
+        <param name="reassignment_stable_count" value="2" type="int"/>
+        <param name="prediction_horizon" value="0.75" type="double"/>
+        <param name="switch_penalty" value="0.25" type="double"/>
+        <param name="minimum_improvement_ratio" value="0.15" type="double"/>
+        <rosparam subst_value="true" param="formation_start">[$(arg start_x), 0.0, 1.5]</rosparam>
+        <rosparam param="formation_slot0">[0.5, -1.0, 0.0]</rosparam>
+        <rosparam param="formation_slot1">[0.5, 0.0, 0.0]</rosparam>
+        <rosparam param="formation_slot2">[0.5, 1.0, 0.0]</rosparam>
+        <rosparam param="formation_slot3">[-0.5, -1.0, 0.0]</rosparam>
+        <rosparam param="formation_slot4">[-0.5, 0.0, 0.0]</rosparam>
+        <rosparam param="formation_slot5">[-0.5, 1.0, 0.0]</rosparam>
+    </node>
+
     <include file="$(find ego_planner)/launch/formation_6uav_dynamic_wall_member.launch">
         <arg name="drone_id" value="0"/><arg name="init_x" value="$(eval float(arg('start_x')) + 0.5)"/><arg name="init_y" value="-1.0"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
+        <arg name="merge_sync_enabled" value="$(arg merge_sync_enabled)"/><arg name="merge_sync_duration" value="$(arg merge_sync_duration)"/><arg name="merge_sync_backtrack_tolerance" value="$(arg merge_sync_backtrack_tolerance)"/><arg name="merge_sync_weight" value="$(arg merge_sync_weight)"/>
         <arg name="max_vel" value="$(arg max_vel)"/><arg name="map_size_x" value="$(arg map_size_x)"/><arg name="map_size_y" value="$(arg map_size_y)"/><arg name="map_size_z" value="$(arg map_size_z)"/><arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="start_x" value="$(arg start_x)"/><arg name="goal_x" value="$(arg goal_x)"/><arg name="wall_x" value="$(arg wall_x)"/><arg name="wall_y" value="$(arg wall_y)"/><arg name="wall_size_x" value="$(arg wall_size_x)"/><arg name="wall_size_y" value="$(arg wall_size_y)"/><arg name="safety_distance" value="$(arg safety_distance)"/><arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/><arg name="formation_weight" value="$(arg formation_weight)"/>
     </include>
     <include file="$(find ego_planner)/launch/formation_6uav_dynamic_wall_member.launch">
         <arg name="drone_id" value="1"/><arg name="init_x" value="$(eval float(arg('start_x')) + 0.5)"/><arg name="init_y" value="0.0"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
+        <arg name="merge_sync_enabled" value="$(arg merge_sync_enabled)"/><arg name="merge_sync_duration" value="$(arg merge_sync_duration)"/><arg name="merge_sync_backtrack_tolerance" value="$(arg merge_sync_backtrack_tolerance)"/><arg name="merge_sync_weight" value="$(arg merge_sync_weight)"/>
         <arg name="max_vel" value="$(arg max_vel)"/><arg name="map_size_x" value="$(arg map_size_x)"/><arg name="map_size_y" value="$(arg map_size_y)"/><arg name="map_size_z" value="$(arg map_size_z)"/><arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="start_x" value="$(arg start_x)"/><arg name="goal_x" value="$(arg goal_x)"/><arg name="wall_x" value="$(arg wall_x)"/><arg name="wall_y" value="$(arg wall_y)"/><arg name="wall_size_x" value="$(arg wall_size_x)"/><arg name="wall_size_y" value="$(arg wall_size_y)"/><arg name="safety_distance" value="$(arg safety_distance)"/><arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/><arg name="formation_weight" value="$(arg formation_weight)"/>
     </include>
     <include file="$(find ego_planner)/launch/formation_6uav_dynamic_wall_member.launch">
         <arg name="drone_id" value="2"/><arg name="init_x" value="$(eval float(arg('start_x')) + 0.5)"/><arg name="init_y" value="1.0"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
+        <arg name="merge_sync_enabled" value="$(arg merge_sync_enabled)"/><arg name="merge_sync_duration" value="$(arg merge_sync_duration)"/><arg name="merge_sync_backtrack_tolerance" value="$(arg merge_sync_backtrack_tolerance)"/><arg name="merge_sync_weight" value="$(arg merge_sync_weight)"/>
         <arg name="max_vel" value="$(arg max_vel)"/><arg name="map_size_x" value="$(arg map_size_x)"/><arg name="map_size_y" value="$(arg map_size_y)"/><arg name="map_size_z" value="$(arg map_size_z)"/><arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="start_x" value="$(arg start_x)"/><arg name="goal_x" value="$(arg goal_x)"/><arg name="wall_x" value="$(arg wall_x)"/><arg name="wall_y" value="$(arg wall_y)"/><arg name="wall_size_x" value="$(arg wall_size_x)"/><arg name="wall_size_y" value="$(arg wall_size_y)"/><arg name="safety_distance" value="$(arg safety_distance)"/><arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/><arg name="formation_weight" value="$(arg formation_weight)"/>
     </include>
     <include file="$(find ego_planner)/launch/formation_6uav_dynamic_wall_member.launch">
         <arg name="drone_id" value="3"/><arg name="init_x" value="$(eval float(arg('start_x')) - 0.5)"/><arg name="init_y" value="-1.0"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
+        <arg name="merge_sync_enabled" value="$(arg merge_sync_enabled)"/><arg name="merge_sync_duration" value="$(arg merge_sync_duration)"/><arg name="merge_sync_backtrack_tolerance" value="$(arg merge_sync_backtrack_tolerance)"/><arg name="merge_sync_weight" value="$(arg merge_sync_weight)"/>
         <arg name="max_vel" value="$(arg max_vel)"/><arg name="map_size_x" value="$(arg map_size_x)"/><arg name="map_size_y" value="$(arg map_size_y)"/><arg name="map_size_z" value="$(arg map_size_z)"/><arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="start_x" value="$(arg start_x)"/><arg name="goal_x" value="$(arg goal_x)"/><arg name="wall_x" value="$(arg wall_x)"/><arg name="wall_y" value="$(arg wall_y)"/><arg name="wall_size_x" value="$(arg wall_size_x)"/><arg name="wall_size_y" value="$(arg wall_size_y)"/><arg name="safety_distance" value="$(arg safety_distance)"/><arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/><arg name="formation_weight" value="$(arg formation_weight)"/>
     </include>
     <include file="$(find ego_planner)/launch/formation_6uav_dynamic_wall_member.launch">
         <arg name="drone_id" value="4"/><arg name="init_x" value="$(eval float(arg('start_x')) - 0.5)"/><arg name="init_y" value="0.0"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
+        <arg name="merge_sync_enabled" value="$(arg merge_sync_enabled)"/><arg name="merge_sync_duration" value="$(arg merge_sync_duration)"/><arg name="merge_sync_backtrack_tolerance" value="$(arg merge_sync_backtrack_tolerance)"/><arg name="merge_sync_weight" value="$(arg merge_sync_weight)"/>
         <arg name="max_vel" value="$(arg max_vel)"/><arg name="map_size_x" value="$(arg map_size_x)"/><arg name="map_size_y" value="$(arg map_size_y)"/><arg name="map_size_z" value="$(arg map_size_z)"/><arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="start_x" value="$(arg start_x)"/><arg name="goal_x" value="$(arg goal_x)"/><arg name="wall_x" value="$(arg wall_x)"/><arg name="wall_y" value="$(arg wall_y)"/><arg name="wall_size_x" value="$(arg wall_size_x)"/><arg name="wall_size_y" value="$(arg wall_size_y)"/><arg name="safety_distance" value="$(arg safety_distance)"/><arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/><arg name="formation_weight" value="$(arg formation_weight)"/>
     </include>
     <include file="$(find ego_planner)/launch/formation_6uav_dynamic_wall_member.launch">
         <arg name="drone_id" value="5"/><arg name="init_x" value="$(eval float(arg('start_x')) - 0.5)"/><arg name="init_y" value="1.0"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
+        <arg name="merge_sync_enabled" value="$(arg merge_sync_enabled)"/><arg name="merge_sync_duration" value="$(arg merge_sync_duration)"/><arg name="merge_sync_backtrack_tolerance" value="$(arg merge_sync_backtrack_tolerance)"/><arg name="merge_sync_weight" value="$(arg merge_sync_weight)"/>
         <arg name="max_vel" value="$(arg max_vel)"/><arg name="map_size_x" value="$(arg map_size_x)"/><arg name="map_size_y" value="$(arg map_size_y)"/><arg name="map_size_z" value="$(arg map_size_z)"/><arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="start_x" value="$(arg start_x)"/><arg name="goal_x" value="$(arg goal_x)"/><arg name="wall_x" value="$(arg wall_x)"/><arg name="wall_y" value="$(arg wall_y)"/><arg name="wall_size_x" value="$(arg wall_size_x)"/><arg name="wall_size_y" value="$(arg wall_size_y)"/><arg name="safety_distance" value="$(arg safety_distance)"/><arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/><arg name="formation_weight" value="$(arg formation_weight)"/>
     </include>

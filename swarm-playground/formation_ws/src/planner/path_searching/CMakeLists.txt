@@ -40,3 +40,11 @@ add_library( path_searching
 target_link_libraries( path_searching
     ${catkin_LIBRARIES} 
     )  
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_hungarian_assignment
+    test/test_hungarian_assignment.cpp)
+  if(TARGET test_hungarian_assignment)
+    target_link_libraries(test_hungarian_assignment ${catkin_LIBRARIES})
+  endif()
+endif()

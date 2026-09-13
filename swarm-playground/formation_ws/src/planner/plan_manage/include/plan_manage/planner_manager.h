@@ -42,7 +42,8 @@ namespace ego_planner
     bool planGlobalTrajWaypoints(
         const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel,
         const Eigen::Vector3d &start_acc, const std::vector<Eigen::Vector3d> &waypoints,
-        const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc);
+        const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc,
+        const bool reset_local_trajectory = true);
     void getLocalTarget(
         const double planning_horizen,
         const Eigen::Vector3d &start_pt, const Eigen::Vector3d &global_end_pt,
@@ -50,10 +51,12 @@ namespace ego_planner
         bool &touch_goal);
     bool EmergencyStop(Eigen::Vector3d stop_pos);
     bool checkCollision(int drone_id);
+    bool setFormationAssignment(const std::vector<int> &assignment);
     void setManualFormationSplit(const bool enabled);
     void setDynamicFormationGroups(const std::vector<int> &groups);
     void setSplitSubgroupFormationWeightScale(const double scale);
     void setSplitProgressSyncWeightScale(const double scale);
+    void beginMergeSynchronization(const Eigen::Vector3d &position);
     void setSubgroupRouteIntent(const bool active,
                                 const Eigen::Vector3d &origin,
                                 const Eigen::Vector3d &direction,

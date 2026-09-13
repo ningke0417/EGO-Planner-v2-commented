@@ -16,6 +16,7 @@
 #include <sensor_msgs/PointCloud2.h>
 #include <std_msgs/Float64MultiArray.h>
 #include <std_msgs/String.h>
+#include <std_msgs/UInt32MultiArray.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 
@@ -32,8 +33,9 @@ using starconvex_adapter::subtract;
 
 constexpr std::size_t kUavCount = 4;
 constexpr std::size_t kEdgeCount = 4;
-const std::array<std::array<int, 2>, kEdgeCount> kEdges{
+const std::array<std::array<int, 2>, kEdgeCount> kSlotEdges{
     {{{0, 1}}, {{1, 3}}, {{3, 2}}, {{2, 0}}}};
+std::array<std::array<int, 2>, kEdgeCount> gEdges = kSlotEdges;
 
 double planarDistance(const Vec3& first, const Vec3& second) {
   return std::hypot(first.x - second.x, first.y - second.y);
@@ -69,6 +71,9 @@ class FourUavShadow {
           obstacle_cloud_topic_, 1, &FourUavShadow::obstacleCloudCallback,
           this);
     }
+    assignment_subscriber_ = nh_.subscribe<std_msgs::UInt32MultiArray>(
+        "/formation_backend/initial_assignment", 1,
+        &FourUavShadow::assignmentCallback, this);
     state_pub_ = private_nh_.advertise<std_msgs::String>("state", 1, true);
     score_pub_ = private_nh_.advertise<std_msgs::Float64MultiArray>("scores", 1, true);
     merge_score_pub_ =
@@ -89,6 +94,25 @@ class FourUavShadow {
 
 	 private:
 	  enum class EdgeState { KEEP, CUT };//每条边只有两种状态：KEEP 或 CUT
+
+  void assignmentCallback(const std_msgs::UInt32MultiArray::ConstPtr& message) {
+    if (assignment_locked_ || message->data.size() != kUavCount) return;
+    std::array<int, kUavCount> drone_for_slot{{-1, -1, -1, -1}};
+    for (std::size_t drone = 0; drone < kUavCount; ++drone) {
+      const std::size_t slot = message->data[drone];
+      if (slot >= kUavCount || drone_for_slot[slot] >= 0) {
+        ROS_ERROR("[INITIAL_ASSIGNMENT] criterion rejected invalid permutation");
+        return;
+      }
+      drone_for_slot[slot] = static_cast<int>(drone);
+    }
+    for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
+      gEdges[edge] = {{drone_for_slot[kSlotEdges[edge][0]],
+                       drone_for_slot[kSlotEdges[edge][1]]}};
+    }
+    assignment_locked_ = true;
+    ROS_WARN("[INITIAL_ASSIGNMENT] criterion slot topology mapped to physical UAV IDs");
+  }
 
   void loadParameters() {
     private_nh_.param<std::string>("odom_topic_suffix", odom_suffix_,
@@ -338,8 +362,8 @@ class FourUavShadow {
     std::array<Vec3, kEdgeCount> pair_midpoints{};
     std::array<Vec3, kEdgeCount> merge_directions{};
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
-      const int first = kEdges[edge][0];
-      const int second = kEdges[edge][1];
+      const int first = gEdges[edge][0];
+      const int second = gEdges[edge][1];
       pair_midpoints[edge] = {
           0.5 * (positions_[first].x + positions_[second].x),
           0.5 * (positions_[first].y + positions_[second].y),
@@ -367,14 +391,14 @@ class FourUavShadow {
           }
           for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
             intersection_counts[edge] += static_cast<std::size_t>(
-                inside[kEdges[edge][0]] && inside[kEdges[edge][1]]);
+                inside[gEdges[edge][0]] && inside[gEdges[edge][1]]);
             if (!(*merge_direction_valid)[edge]) continue;
             const double forward_projection =
                 (x - pair_midpoints[edge].x) * merge_directions[edge].x +
                 (y - pair_midpoints[edge].y) * merge_directions[edge].y;
             if (forward_projection < 0.0) continue;
-            const bool first_inside = inside[kEdges[edge][0]];
-            const bool second_inside = inside[kEdges[edge][1]];
+            const bool first_inside = inside[gEdges[edge][0]];
+            const bool second_inside = inside[gEdges[edge][1]];
             front_volume_counts[edge][0] +=
                 static_cast<std::size_t>(first_inside);
             front_volume_counts[edge][1] +=
@@ -388,15 +412,15 @@ class FourUavShadow {
 
     std::array<double, kEdgeCount> scores{};
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
-      const std::size_t first_count = volume_counts[kEdges[edge][0]];
-      const std::size_t second_count = volume_counts[kEdges[edge][1]];
+      const std::size_t first_count = volume_counts[gEdges[edge][0]];
+      const std::size_t second_count = volume_counts[gEdges[edge][1]];
       const std::size_t smaller = std::min(first_count, second_count);
       (*overlap)[edge] = smaller
                              ? static_cast<double>(intersection_counts[edge]) /
                                    static_cast<double>(smaller)
                              : 0.0;
       const double weight = visibilityWeight(
-          positions_[kEdges[edge][0]], positions_[kEdges[edge][1]],
+          positions_[gEdges[edge][0]], positions_[gEdges[edge][1]],
           &(*clearance)[edge]);
       (*visibility_weights)[edge] = weight;
       scores[edge] = (*overlap)[edge] * weight;
@@ -440,7 +464,7 @@ class FourUavShadow {
 
   void triggerRearSplitPropagation(const ros::Time& now) {
     if (!rear_split_propagation_enabled_) return;
-    constexpr std::size_t kRearEdge = 2;  // kEdges[2] is 3-2, the rear row.
+    constexpr std::size_t kRearEdge = 2;  // Slot edge 2 is the rear row.
     const double front_rear_distance =
         planarDistance(positions_[0], positions_[2]);
     const double raw_duration =
@@ -523,7 +547,7 @@ class FourUavShadow {
 	
 	    for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
 	      if (edge_states_[edge] == EdgeState::KEEP) {
-	        unite(kEdges[edge][0], kEdges[edge][1]);
+	        unite(gEdges[edge][0], gEdges[edge][1]);
 	      }
 	    }
 	    for (int id = 0; id < static_cast<int>(kUavCount); ++id) {
@@ -618,8 +642,8 @@ class FourUavShadow {
 	      line.color = edgeColor(scores[edge], edge_states_[edge],
 	                             pending_has_previous_[edge]);
 	      if (!cut) {
-	        line.points.push_back(pointMessage(positions_[kEdges[edge][0]]));
-	        line.points.push_back(pointMessage(positions_[kEdges[edge][1]]));
+	        line.points.push_back(pointMessage(positions_[gEdges[edge][0]]));
+	        line.points.push_back(pointMessage(positions_[gEdges[edge][1]]));
 	        array.markers.push_back(line);
 	      }
 	
@@ -632,18 +656,18 @@ class FourUavShadow {
       label.scale.z = 0.22;
       label.color = line.color;
       label.pose.orientation.w = 1.0;
-      label.pose.position.x = 0.5 * (positions_[kEdges[edge][0]].x +
-                                     positions_[kEdges[edge][1]].x);
-      label.pose.position.y = 0.5 * (positions_[kEdges[edge][0]].y +
-                                     positions_[kEdges[edge][1]].y);
-	      label.pose.position.z = 0.5 * (positions_[kEdges[edge][0]].z +
-	                                     positions_[kEdges[edge][1]].z) + 0.25;
+      label.pose.position.x = 0.5 * (positions_[gEdges[edge][0]].x +
+                                     positions_[gEdges[edge][1]].x);
+      label.pose.position.y = 0.5 * (positions_[gEdges[edge][0]].y +
+                                     positions_[gEdges[edge][1]].y);
+	      label.pose.position.z = 0.5 * (positions_[gEdges[edge][0]].z +
+	                                     positions_[gEdges[edge][1]].z) + 0.25;
 	      std::ostringstream text;
       if (cut && edge == 2 && rearForcedCutActive(ros::Time::now())) {
         text << "PROP_CUT ";
       } else if (cut) text << "CUT ";
 	      else if (pending_has_previous_[edge]) text << "WATCH ";
-	      text << kEdges[edge][0] << '-' << kEdges[edge][1] << " S="
+	      text << gEdges[edge][0] << '-' << gEdges[edge][1] << " S="
 	           << std::fixed << std::setprecision(2) << scores[edge] << " M=";
       if (merge_direction_valid[edge]) {
         text << merge_scores[edge];
@@ -668,10 +692,10 @@ class FourUavShadow {
       backend_edges.color.b = 1.0;
 	      for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
 	        if (backend_split &&
-	            !sameBackendGroup(kEdges[edge][0], kEdges[edge][1]))
+	            !sameBackendGroup(gEdges[edge][0], gEdges[edge][1]))
 	          continue;
-	        backend_edges.points.push_back(pointMessage(positions_[kEdges[edge][0]]));
-	        backend_edges.points.push_back(pointMessage(positions_[kEdges[edge][1]]));
+	        backend_edges.points.push_back(pointMessage(positions_[gEdges[edge][0]]));
+	        backend_edges.points.push_back(pointMessage(positions_[gEdges[edge][1]]));
 	      }
       array.markers.push_back(backend_edges);
     }
@@ -773,7 +797,7 @@ class FourUavShadow {
 	      if (edge_states_[edge] != EdgeState::CUT) continue;
 	      if (!first_cut) summary << ",";
 	      first_cut = false;
-	      summary << kEdges[edge][0] << "-" << kEdges[edge][1];
+	      summary << gEdges[edge][0] << "-" << gEdges[edge][1];
 	    }
 	    summary << "\""
 	            << ",\"cut_score\":"
@@ -867,6 +891,7 @@ class FourUavShadow {
   std::array<ros::Subscriber, kUavCount> odom_subscribers_;
   std::array<ros::Subscriber, kUavCount> backend_group_subscribers_;
   ros::Subscriber obstacle_cloud_subscriber_;
+  ros::Subscriber assignment_subscriber_;
   ros::Publisher state_pub_;
   ros::Publisher score_pub_;
   ros::Publisher merge_score_pub_;
@@ -914,6 +939,7 @@ class FourUavShadow {
 	  std::array<Vec3, kEdgeCount> pending_previous_centers_;
   bool last_safety_violation_ = false;
   bool map_seen_ = false;
+  bool assignment_locked_ = false;
   std::unique_ptr<VoxelObstacleField> obstacle_field_;
   std::unique_ptr<VoxelObstacleField> narrow_obstacle_field_;
 };

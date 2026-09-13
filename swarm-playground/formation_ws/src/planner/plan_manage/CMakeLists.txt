@@ -108,6 +108,20 @@ target_link_libraries(formation_auto_split_bridge_4uav_node
 add_dependencies(formation_auto_split_bridge_4uav_node
   ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
+add_executable(initial_formation_assignment_4uav_node
+  src/initial_formation_assignment_4uav_node.cpp)
+target_link_libraries(initial_formation_assignment_4uav_node
+  ${catkin_LIBRARIES}
+)
+
+add_executable(initial_formation_assignment_6uav_node
+  src/initial_formation_assignment_6uav_node.cpp)
+target_link_libraries(initial_formation_assignment_6uav_node
+  ${catkin_LIBRARIES}
+)
+add_dependencies(initial_formation_assignment_6uav_node
+  ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
 add_executable(formation_auto_split_bridge_6uav_node
   src/formation_auto_split_bridge_6uav_node.cpp)
 target_link_libraries(formation_auto_split_bridge_6uav_node

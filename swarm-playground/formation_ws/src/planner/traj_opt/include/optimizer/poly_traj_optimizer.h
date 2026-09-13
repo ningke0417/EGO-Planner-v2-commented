@@ -103,6 +103,7 @@ namespace ego_planner
     std::vector<int> dynamic_formation_groups_;
     bool split_side_guidance_enabled_{false};
     Eigen::MatrixXd formation_;
+    Eigen::MatrixXd canonical_formation_;
     Eigen::Vector3d FStart_, FEnd_;                                 //first start pt, final end pt
     double split_side_guidance_weight_{0.0};
     double split_side_guidance_margin_{0.35};
@@ -110,6 +111,12 @@ namespace ego_planner
     double split_subgroup_formation_weight_scale_{1.0};
     double split_progress_sync_weight_scale_{0.0};
     double split_progress_sync_deadband_{0.6};
+    bool merge_sync_enabled_{false};
+    double merge_sync_duration_{8.0};
+    double merge_sync_backtrack_tolerance_{0.03};
+    double merge_sync_weight_{1000.0};
+    double merge_sync_until_{0.0};
+    Eigen::Vector3d merge_sync_floor_position_{Eigen::Vector3d::Zero()};
     bool subgroup_route_intent_active_{false};
     Eigen::Vector3d subgroup_route_intent_origin_{Eigen::Vector3d::Zero()};
     Eigen::Vector3d subgroup_route_intent_direction_{Eigen::Vector3d::UnitX()};
@@ -136,10 +143,12 @@ namespace ego_planner
     void setControlPoints(const Eigen::MatrixXd &points);
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
     void setDroneId(const int drone_id);
+    bool setFormationAssignment(const std::vector<int> &assignment);
     void setManualFormationSplit(const bool enabled);
     void setDynamicFormationGroups(const std::vector<int> &groups);
     void setSplitSubgroupFormationWeightScale(const double scale);
     void setSplitProgressSyncWeightScale(const double scale);
+    void beginMergeSynchronization(const Eigen::Vector3d &position);
     void setSubgroupRouteIntent(const bool active,
                                 const Eigen::Vector3d &origin,
                                 const Eigen::Vector3d &direction,
@@ -232,6 +241,14 @@ namespace ego_planner
                                       double &var);
 
     bool formationGradCostP(const int i_dp,
+                            const double t,
+                            const Eigen::Vector3d &p,
+                            const Eigen::Vector3d &v,
+                            Eigen::Vector3d &gradp,
+                            double &gradt,
+                            double &grad_prev_t,
+                            double &costp);
+    bool mergeSyncGradCostP(const int i_dp,
                             const double t,
                             const Eigen::Vector3d &p,
                             const Eigen::Vector3d &v,

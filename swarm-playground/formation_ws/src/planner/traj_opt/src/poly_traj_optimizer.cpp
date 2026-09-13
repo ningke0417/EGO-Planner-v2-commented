@@ -17,6 +17,23 @@ namespace ego_planner
 
     piece_num_ = initT.size();
 
+    // Keep advancing the no-backtracking reference as replanning proceeds.
+    // A fixed reference at the merge point would still allow a vehicle that
+    // has moved forward to be pulled all the way back to that old position.
+    if (merge_sync_enabled_ &&
+        ros::Time::now().toSec() <= merge_sync_until_)
+    {
+      const Eigen::Vector3d route = FEnd_ - FStart_;
+      if (route.norm() > 1e-6)
+      {
+        const Eigen::Vector3d direction = route.normalized();
+        const Eigen::Vector3d replan_start = iniState.col(0);
+        if (replan_start.allFinite() &&
+            (replan_start - merge_sync_floor_position_).dot(direction) > 0.0)
+          merge_sync_floor_position_ = replan_start;
+      }
+    }
+
     jerkOpt_.reset(iniState, finState, piece_num_);
 
     variable_num_ = 4 * (piece_num_ - 1) + 1;
@@ -1348,6 +1365,22 @@ namespace ego_planner
           costs(1) += omg * step * costp;
         }
 
+        // After disconnected components reconnect, formation recovery may
+        // make a leading vehicle wait or crawl, but never fly backwards.
+        gradt = 0, grad_prev_t = 0;
+        if (mergeSyncGradCostP(i_dp, t + step * j, pos, vel,
+                               gradp, gradt, grad_prev_t, costp))
+        {
+          gradViolaPc = beta0 * gradp.transpose();
+          gradViolaPt = alpha * gradt;
+          jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) +=
+              omg * step * gradViolaPc;
+          gdT(i) += omg * (costp / K + step * gradViolaPt);
+          if (i > 0)
+            gdT.head(i).array() += omg * step * grad_prev_t;
+          costs(1) += omg * step * costp;
+        }
+
         // feasibility
         if (feasibilityGradCostV(vel, gradv, costv))
         {
@@ -1796,6 +1829,48 @@ namespace ego_planner
     return true;
   }
 
+  bool PolyTrajOptimizer::mergeSyncGradCostP(
+      const int i_dp, const double /*t*/, const Eigen::Vector3d &p,
+      const Eigen::Vector3d &v, Eigen::Vector3d &gradp, double &gradt,
+      double &grad_prev_t, double &costp)
+  {
+    if (!merge_sync_enabled_ || t_now_ > merge_sync_until_ ||
+        i_dp <= 0)
+      return false;
+
+    const Eigen::Vector3d route = FEnd_ - FStart_;
+    if (route.norm() < 1e-6)
+      return false;
+    const Eigen::Vector3d direction = route.normalized();
+    const double own_progress =
+        (p - FStart_).dot(direction) - formation_(0, drone_id_);
+    const double floor_progress =
+        (merge_sync_floor_position_ - FStart_).dot(direction) -
+        formation_(0, drone_id_);
+
+    gradp.setZero();
+    gradt = 0.0;
+    grad_prev_t = 0.0;
+    costp = 0.0;
+    bool active_cost = false;
+
+    // One-sided rolling floor: formation restoration may stop forward progress,
+    // but it must not send this vehicle behind the latest replan start.
+    const double backtrack = floor_progress - own_progress -
+                             merge_sync_backtrack_tolerance_;
+    if (backtrack > 0.0)
+    {
+      const Eigen::Vector3d backtrack_grad =
+          -2.0 * merge_sync_weight_ * backtrack * direction;
+      costp += merge_sync_weight_ * backtrack * backtrack;
+      gradp += backtrack_grad;
+      gradt += backtrack_grad.dot(v);
+      active_cost = true;
+    }
+
+    return active_cost;
+  }
+
   bool PolyTrajOptimizer::feasibilityGradCostV(const Eigen::Vector3d &v,
                                                Eigen::Vector3d &gradv,
                                                double &costv)
@@ -1916,6 +1991,15 @@ namespace ego_planner
              split_progress_sync_deadband_, 0.6);
     split_progress_sync_deadband_ =
         std::max(0.0, split_progress_sync_deadband_);
+    nh.param("formation/merge_sync_enabled", merge_sync_enabled_, false);
+    nh.param("formation/merge_sync_duration", merge_sync_duration_, 8.0);
+    nh.param("formation/merge_sync_backtrack_tolerance",
+             merge_sync_backtrack_tolerance_, 0.03);
+    nh.param("formation/merge_sync_weight", merge_sync_weight_, 1000.0);
+    merge_sync_duration_ = std::max(0.0, merge_sync_duration_);
+    merge_sync_backtrack_tolerance_ =
+        std::max(0.0, merge_sync_backtrack_tolerance_);
+    merge_sync_weight_ = std::max(0.0, merge_sync_weight_);
     nh.param("formation/subgroup_route_intent_weight",
              subgroup_route_intent_weight_, 80.0);
     nh.param("formation/subgroup_route_intent_corridor_half_width",
@@ -1927,6 +2011,7 @@ namespace ego_planner
       nh.getParam("formation/drone" + to_string(i), pos);
       formation_.col(i) << pos[0], pos[1], pos[2];
     }
+    canonical_formation_ = formation_;
   }
 
   void PolyTrajOptimizer::setEnvironment(const GridMap::Ptr &map)
@@ -1945,6 +2030,24 @@ namespace ego_planner
   void PolyTrajOptimizer::setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr) { swarm_trajs_ = swarm_trajs_ptr; }
 
   void PolyTrajOptimizer::setDroneId(const int drone_id) { drone_id_ = drone_id; }
+
+  bool PolyTrajOptimizer::setFormationAssignment(
+      const std::vector<int> &assignment)
+  {
+    if (static_cast<int>(assignment.size()) != formation_num_)
+      return false;
+    std::vector<bool> used(formation_num_, false);
+    for (const int slot : assignment)
+    {
+      if (slot < 0 || slot >= formation_num_ || used[slot])
+        return false;
+      used[slot] = true;
+    }
+
+    for (int id = 0; id < formation_num_; ++id)
+      formation_.col(id) = canonical_formation_.col(assignment[id]);
+    return true;
+  }
 
   void PolyTrajOptimizer::setManualFormationSplit(const bool enabled)
   {
@@ -1974,6 +2077,18 @@ namespace ego_planner
   void PolyTrajOptimizer::setSplitProgressSyncWeightScale(const double scale)
   {
     split_progress_sync_weight_scale_ = std::max(0.0, scale);
+  }
+
+  void PolyTrajOptimizer::beginMergeSynchronization(
+      const Eigen::Vector3d &position)
+  {
+    if (!merge_sync_enabled_ || !position.allFinite())
+      return;
+    merge_sync_floor_position_ = position;
+    merge_sync_until_ = ros::Time::now().toSec() + merge_sync_duration_;
+    ROS_WARN("[MERGE_SYNC] drone %d active for %.2fs at (%.3f, %.3f, %.3f)",
+             drone_id_, merge_sync_duration_, position.x(), position.y(),
+             position.z());
   }
 
   void PolyTrajOptimizer::setSubgroupRouteIntent(

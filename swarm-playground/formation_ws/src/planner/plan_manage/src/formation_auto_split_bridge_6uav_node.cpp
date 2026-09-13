@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -11,14 +12,16 @@
 #include <ego_planner/FormationTopologyCommand.h>
 #include <ros/ros.h>
 #include <std_msgs/String.h>
+#include <std_msgs/UInt32MultiArray.h>
 
 namespace {
 
 constexpr std::size_t kUavCount = 6;
 constexpr std::size_t kEdgeCount = 7;
-const std::array<std::array<int, 2>, kEdgeCount> kEdges{{
+const std::array<std::array<int, 2>, kEdgeCount> kSlotEdges{{
     {{0, 1}}, {{1, 2}}, {{3, 4}}, {{4, 5}},
     {{0, 3}}, {{1, 4}}, {{2, 5}}}};
+std::array<std::array<int, 2>, kEdgeCount> gEdges = kSlotEdges;
 const char kAllUavComponent[] = "{0,1,2,3,4,5}";
 
 class SixUavAutoSplitBridge {
@@ -38,21 +41,31 @@ class SixUavAutoSplitBridge {
     private_nh_.param("merge_max_edge_distance",
                       merge_max_edge_distance_, 3.0);
     private_nh_.param("merge_ready_persistence",
-                      merge_ready_persistence_, 0.5);
+                      merge_ready_persistence_, 0.3);
     private_nh_.param("weak_reconnect_enabled",
                       weak_reconnect_enabled_, true);
     private_nh_.param("weak_reconnect_ready_persistence",
-                      weak_reconnect_ready_persistence_, 0.5);
+                      weak_reconnect_ready_persistence_, 0.3);
     private_nh_.param("weak_reconnect_visibility_threshold",
                       weak_reconnect_visibility_threshold_, 1.0);
+    private_nh_.param("weak_reconnect_max_edge_distance",
+                      weak_reconnect_max_edge_distance_, 3.00);
     private_nh_.param("weak_reconnect_formation_weight_scale",
-                      weak_reconnect_formation_weight_scale_, 0.15);
+                      weak_reconnect_formation_weight_scale_, 0.22);
+    private_nh_.param("weak_reconnect_mid_formation_weight_scale",
+                      weak_reconnect_mid_formation_weight_scale_, 0.25);
+    private_nh_.param("weak_reconnect_final_formation_weight_scale",
+                      weak_reconnect_final_formation_weight_scale_, 0.30);
+    private_nh_.param("weak_reconnect_ramp_step_duration",
+                      weak_reconnect_ramp_step_duration_, 0.5);
     private_nh_.param("split_formation_weight_scale",
                       split_formation_weight_scale_, 0.15);
     private_nh_.param("split_progress_sync_weight_scale",
                       split_progress_sync_weight_scale_, 0.0);
     private_nh_.param("secondary_hard_split_threshold",
                       secondary_hard_split_threshold_, 0.20);
+    private_nh_.param("secondary_distance_split_threshold",
+                      secondary_distance_split_threshold_, 1.80);
     private_nh_.param("ack_timeout", ack_timeout_, 2.0);
     if (criterion_timeout_ <= 0.0 || split_ready_persistence_ < 0.0 ||
         topology_change_persistence_ < 0.0 || merge_wall_half_x_ < 0.0 ||
@@ -61,17 +74,30 @@ class SixUavAutoSplitBridge {
         weak_reconnect_ready_persistence_ < 0.0 ||
         weak_reconnect_visibility_threshold_ < 0.0 ||
         weak_reconnect_visibility_threshold_ > 1.0 ||
+        weak_reconnect_max_edge_distance_ <= 0.0 ||
         weak_reconnect_formation_weight_scale_ < 0.0 ||
+        weak_reconnect_mid_formation_weight_scale_ <
+            weak_reconnect_formation_weight_scale_ ||
+        weak_reconnect_final_formation_weight_scale_ <
+            weak_reconnect_mid_formation_weight_scale_ ||
+        weak_reconnect_ramp_step_duration_ <= 0.0 ||
         split_formation_weight_scale_ < 0.0 ||
         split_progress_sync_weight_scale_ < 0.0 ||
         secondary_hard_split_threshold_ < 0.0 ||
-        secondary_hard_split_threshold_ > 1.0 || ack_timeout_ <= 0.0) {
+        secondary_hard_split_threshold_ > 1.0 ||
+        secondary_distance_split_threshold_ <= 0.0 || ack_timeout_ <= 0.0) {
       throw std::runtime_error("invalid six-UAV auto-split parameters");
     }
 
     summary_subscriber_ = nh_.subscribe<std_msgs::String>(
         criterion_summary_topic_, 1,
         &SixUavAutoSplitBridge::summaryCallback, this);
+    assignment_subscriber_ = nh_.subscribe<std_msgs::UInt32MultiArray>(
+        "/formation_backend/initial_assignment", 1,
+        &SixUavAutoSplitBridge::assignmentCallback, this);
+    assignment_ack_subscriber_ = nh_.subscribe<std_msgs::UInt32MultiArray>(
+        "/formation_backend/assignment_ack", 30,
+        &SixUavAutoSplitBridge::assignmentAckCallback, this);
     ack_subscriber_ = nh_.subscribe<ego_planner::FormationTopologyAck>(
         "/formation_backend/topology_ack", 30,
         &SixUavAutoSplitBridge::ackCallback, this);
@@ -97,13 +123,79 @@ class SixUavAutoSplitBridge {
                     << (weak_reconnect_enabled_ ? "enabled" : "disabled")
                     << " weak_visibility_threshold="
                     << weak_reconnect_visibility_threshold_
+                    << " weak_max_edge_distance="
+                    << weak_reconnect_max_edge_distance_
                     << " weak_visibility_hold="
                     << weak_reconnect_ready_persistence_
                     << " weak_scale="
-                    << weak_reconnect_formation_weight_scale_);
+                    << weak_reconnect_formation_weight_scale_
+                    << "->" << weak_reconnect_mid_formation_weight_scale_
+                    << "->" << weak_reconnect_final_formation_weight_scale_
+                    << " ramp_step=" << weak_reconnect_ramp_step_duration_
+                    << " s");
   }
 
  private:
+  void assignmentCallback(const std_msgs::UInt32MultiArray::ConstPtr& message) {
+    const bool versioned = message->data.size() == kUavCount + 1;
+    if (!versioned && message->data.size() != kUavCount) {
+      ROS_ERROR_STREAM("[6UAV_AUTO_SPLIT] Reject assignment with size "
+                       << message->data.size());
+      return;
+    }
+    const uint32_t generation = versioned ? message->data[0] : 0;
+    if ((versioned && generation <= assignment_generation_) ||
+        (!versioned && assignment_received_))
+      return;
+    const std::size_t offset = versioned ? 1 : 0;
+    std::array<int, kUavCount> slot_to_drone{};
+    std::array<bool, kUavCount> seen{{false, false, false, false, false, false}};
+    for (std::size_t drone = 0; drone < kUavCount; ++drone) {
+      const std::size_t slot = message->data[drone + offset];
+      if (slot >= kUavCount || seen[slot]) {
+        ROS_ERROR("[6UAV_AUTO_SPLIT] Reject non-permutation assignment");
+        return;
+      }
+      seen[slot] = true;
+      slot_to_drone[slot] = static_cast<int>(drone);
+    }
+    for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
+      gEdges[edge][0] = slot_to_drone[kSlotEdges[edge][0]];
+      gEdges[edge][1] = slot_to_drone[kSlotEdges[edge][1]];
+    }
+    criterion_edge_metrics_valid_ = false;
+    candidate_components_.clear();
+    candidate_since_ = ros::Time();
+    assignment_generation_ = generation;
+    assignment_received_ = true;
+    assignment_acknowledgements_.fill(false);
+    ROS_WARN_STREAM("[6UAV_AUTO_SPLIT] assignment generation=" << generation
+                    << " mapped slot topology to physical edges: "
+                    << gEdges[0][0] << gEdges[0][1] << ","
+                    << gEdges[1][0] << gEdges[1][1] << ","
+                    << gEdges[2][0] << gEdges[2][1] << ","
+                    << gEdges[3][0] << gEdges[3][1] << ","
+                    << gEdges[4][0] << gEdges[4][1] << ","
+                    << gEdges[5][0] << gEdges[5][1] << ","
+                    << gEdges[6][0] << gEdges[6][1]);
+  }
+
+  void assignmentAckCallback(
+      const std_msgs::UInt32MultiArray::ConstPtr& message) {
+    if (message->data.size() != 2 ||
+        message->data[0] != assignment_generation_ ||
+        message->data[1] >= kUavCount)
+      return;
+    assignment_acknowledgements_[message->data[1]] = true;
+  }
+
+  bool assignmentConfirmed() const {
+    return assignment_received_ &&
+        std::all_of(assignment_acknowledgements_.begin(),
+                    assignment_acknowledgements_.end(),
+                    [](bool value) { return value; });
+  }
+
   std::string extractString(const std::string& text,
                             const std::string& key) const {
     const std::string needle = "\"" + key + "\":\"";
@@ -238,8 +330,8 @@ class SixUavAutoSplitBridge {
     };
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
       if (!connected[edge]) continue;
-      const int first_root = find_root(kEdges[edge][0]);
-      const int second_root = find_root(kEdges[edge][1]);
+      const int first_root = find_root(gEdges[edge][0]);
+      const int second_root = find_root(gEdges[edge][1]);
       if (first_root != second_root) parent[second_root] = first_root;
     }
     std::vector<std::vector<int>> components;
@@ -276,8 +368,8 @@ class SixUavAutoSplitBridge {
 
     std::array<bool, kEdgeCount> effective_edges{};
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
-      const int first = kEdges[edge][0];
-      const int second = kEdges[edge][1];
+      const int first = gEdges[edge][0];
+      const int second = gEdges[edge][1];
       const bool active_connected = active_groups[first] == active_groups[second];
       const bool candidate_connected =
           candidate_groups[first] == candidate_groups[second];
@@ -288,15 +380,17 @@ class SixUavAutoSplitBridge {
       }
       const bool hard_cut =
           edge_scores_[edge] <= secondary_hard_split_threshold_ ||
-          edge_clearances_[edge] <= 0.0 || edge_visibility_[edge] <= 0.0;
+          edge_clearances_[edge] <= 0.0 || edge_visibility_[edge] <= 0.0 ||
+          edge_distances_[edge] >= secondary_distance_split_threshold_;
       effective_edges[edge] = !hard_cut;
       if (!hard_cut) {
         ROS_WARN_STREAM_THROTTLE(
             1.0, "[6UAV_TOPOLOGY_GUARD] Preserve edge "
-                     << kEdges[edge][0] << "-" << kEdges[edge][1]
+                     << gEdges[edge][0] << "-" << gEdges[edge][1]
                      << " during secondary split: S=" << edge_scores_[edge]
                      << " clearance=" << edge_clearances_[edge]
-                     << " visibility=" << edge_visibility_[edge]);
+                     << " visibility=" << edge_visibility_[edge]
+                     << " distance=" << edge_distances_[edge]);
       }
     }
     return componentsFromEdges(effective_edges);
@@ -305,12 +399,29 @@ class SixUavAutoSplitBridge {
   void summaryCallback(const std_msgs::String::ConstPtr& message) {
     const std::string state = extractString(message->data, "state");
     const std::string components = extractString(message->data, "components");
+    double generation_value = 0.0;
     double center_x = 0.0;
     double max_edge_distance = 0.0;
-    if (state.empty() || !extractNumber(message->data, "center_x", &center_x) ||
+    if (state.empty() ||
+        !extractNumber(message->data, "assignment_generation",
+                       &generation_value) ||
+        generation_value < 0.0 ||
+        generation_value >
+            static_cast<double>(std::numeric_limits<uint32_t>::max()) ||
+        generation_value != std::floor(generation_value) ||
+        !extractNumber(message->data, "center_x", &center_x) ||
         !extractNumber(message->data, "max_edge_distance",
                        &max_edge_distance)) {
       ROS_WARN_THROTTLE(2.0, "[6UAV_AUTO_SPLIT] Invalid criterion summary.");
+      return;
+    }
+    const uint32_t summary_generation =
+        static_cast<uint32_t>(generation_value);
+    if (!assignment_received_ || summary_generation != assignment_generation_) {
+      ROS_WARN_STREAM_THROTTLE(
+          1.0, "[6UAV_AUTO_SPLIT] Waiting for criterion generation "
+                   << assignment_generation_ << "; received generation "
+                   << summary_generation);
       return;
     }
     std::string canonical = "INTACT";
@@ -326,8 +437,8 @@ class SixUavAutoSplitBridge {
     max_edge_distance_ = max_edge_distance;
     criterion_edge_metrics_valid_ = true;
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
-      const std::string name = std::to_string(kEdges[edge][0]) +
-                               std::to_string(kEdges[edge][1]);
+      const std::string name = std::to_string(gEdges[edge][0]) +
+                               std::to_string(gEdges[edge][1]);
       criterion_edge_metrics_valid_ =
           extractNumber(message->data, "score_" + name,
                         &edge_scores_[edge]) &&
@@ -339,6 +450,7 @@ class SixUavAutoSplitBridge {
                         &edge_distances_[edge]) &&
           criterion_edge_metrics_valid_;
     }
+    criterion_assignment_generation_ = summary_generation;
     criterion_stamp_ = ros::Time::now();
   }
 
@@ -376,6 +488,11 @@ class SixUavAutoSplitBridge {
   void issueCommand(uint8_t mode, const std::string& components,
                     const std::string& reason,
                     double formation_scale = -1.0) {
+    if (mode == ego_planner::FormationTopologyCommand::SPLIT &&
+        reason == "CRITERION_SPLIT" &&
+        active_command_.mode == ego_planner::FormationTopologyCommand::INTACT) {
+      reassignment_completed_for_split_cycle_ = false;
+    }
     active_command_.header.stamp = ros::Time::now();
     active_command_.epoch = ++next_epoch_;
     active_command_.mode = mode;
@@ -421,7 +538,7 @@ class SixUavAutoSplitBridge {
     candidate_since_ = ros::Time(0);
   }
 
-  bool weakReconnectVisibilityReady() const {
+  bool weakReconnectReady() const {
     if (!criterion_edge_metrics_valid_) return false;
     std::array<int, kUavCount> groups;
     if (!componentAssignments(active_command_.components, &groups))
@@ -429,12 +546,15 @@ class SixUavAutoSplitBridge {
 
     bool has_cross_group_edge = false;
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
-      const int first = kEdges[edge][0];
-      const int second = kEdges[edge][1];
+      const int first = gEdges[edge][0];
+      const int second = gEdges[edge][1];
       if (groups[first] == groups[second]) continue;
       has_cross_group_edge = true;
       if (edge_visibility_[edge] + 1e-9 <
           weak_reconnect_visibility_threshold_) {
+        return false;
+      }
+      if (edge_distances_[edge] > weak_reconnect_max_edge_distance_) {
         return false;
       }
     }
@@ -442,7 +562,6 @@ class SixUavAutoSplitBridge {
   }
 
   bool anyHardUnsafeEdge() const {
-    if (!criterion_edge_metrics_valid_) return true;
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
       if (edge_visibility_[edge] <= 0.0 || edge_clearances_[edge] <= 0.0)
         return true;
@@ -453,6 +572,7 @@ class SixUavAutoSplitBridge {
   void leaveWeakRecovery(const std::string& components,
                          const std::string& reason) {
     weak_recovery_active_ = false;
+    weak_recovery_ramp_since_ = ros::Time(0);
     weak_reconnect_ready_since_ = ros::Time(0);
     const std::string fallback = components.empty()
                                      ? weak_recovery_source_components_
@@ -464,6 +584,24 @@ class SixUavAutoSplitBridge {
 
   bool handleWeakRecovery(const ros::Time& now) {
     if (!weak_recovery_active_) return false;
+
+    if (assignment_generation_ < minimum_merge_assignment_generation_ ||
+        !assignmentConfirmed()) {
+      publishStatus("6UAV WEAK_RECOVERY WAIT_REASSIGNMENT_ACK");
+      return true;
+    }
+    awaiting_merge_assignment_ = false;
+    reassignment_completed_for_split_cycle_ = true;
+
+    // The assignment and criterion summaries travel on separate ROS topics.
+    // After remapping gEdges, the most recent summary can still describe the
+    // previous generation.  Waiting here avoids interpreting "no matching
+    // metrics yet" as a hard visibility failure and immediately rolling back.
+    if (!criterion_edge_metrics_valid_ ||
+        criterion_assignment_generation_ != assignment_generation_) {
+      publishStatus("6UAV WEAK_RECOVERY WAIT_MATCHING_CRITERION");
+      return true;
+    }
 
     if (anyHardUnsafeEdge()) {
       std::string fallback;
@@ -477,6 +615,31 @@ class SixUavAutoSplitBridge {
     }
 
     if (criterion_state_ != "INTACT") {
+      // Increase the formation pull only after the reassignment is
+      // acknowledged and a matching-generation summary confirms visibility.
+      // Do not issue another ramp command once the final merge gate is ready.
+      if (weak_recovery_ramp_since_.isZero()) {
+        weak_recovery_ramp_since_ = now;
+        publishStatus("6UAV WEAK_RECOVERY RAMP_INITIAL");
+      }
+      const double ramp_elapsed =
+          (now - weak_recovery_ramp_since_).toSec();
+      if (ramp_elapsed >= 2.0 * weak_reconnect_ramp_step_duration_ &&
+          active_command_.formation_scale + 1e-9 <
+              weak_reconnect_final_formation_weight_scale_) {
+        issueCommand(ego_planner::FormationTopologyCommand::SPLIT,
+                     kAllUavComponent, "WEAK_RECOVERY_RAMP_FINAL",
+                     weak_reconnect_final_formation_weight_scale_);
+        return true;
+      }
+      if (ramp_elapsed >= weak_reconnect_ramp_step_duration_ &&
+          active_command_.formation_scale + 1e-9 <
+              weak_reconnect_mid_formation_weight_scale_) {
+        issueCommand(ego_planner::FormationTopologyCommand::SPLIT,
+                     kAllUavComponent, "WEAK_RECOVERY_RAMP_MID",
+                     weak_reconnect_mid_formation_weight_scale_);
+        return true;
+      }
       merge_ready_since_ = ros::Time(0);
       publishStatus("6UAV WEAK_RECOVERY ACTIVE WAIT_CRITERION_INTACT");
       return true;
@@ -501,6 +664,7 @@ class SixUavAutoSplitBridge {
     }
 
     weak_recovery_active_ = false;
+    weak_recovery_ramp_since_ = ros::Time(0);
     weak_recovery_source_components_.clear();
     issueCommand(ego_planner::FormationTopologyCommand::INTACT, "INTACT",
                  "CRITERION_MERGED_AFTER_WEAK_RECOVERY");
@@ -515,7 +679,15 @@ class SixUavAutoSplitBridge {
       return false;
     }
 
-    if (!weakReconnectVisibilityReady()) {
+    const double merge_gate_x =
+        merge_wall_x_ + merge_wall_half_x_ + merge_after_wall_margin_;
+    if (center_x_ + 1e-9 < merge_gate_x) {
+      weak_reconnect_ready_since_ = ros::Time(0);
+      publishStatus("6UAV WEAK_RECOVERY WAIT_POSITION_GATE");
+      return false;
+    }
+
+    if (!weakReconnectReady()) {
       weak_reconnect_ready_since_ = ros::Time(0);
       return false;
     }
@@ -533,12 +705,18 @@ class SixUavAutoSplitBridge {
 
     weak_recovery_source_components_ = active_command_.components;
     weak_recovery_active_ = true;
+    weak_recovery_ramp_since_ = ros::Time(0);
+    minimum_merge_assignment_generation_ =
+        assignment_generation_ +
+        (reassignment_completed_for_split_cycle_ ? 0u : 1u);
+    awaiting_merge_assignment_ = !reassignment_completed_for_split_cycle_;
     issueCommand(ego_planner::FormationTopologyCommand::SPLIT,
                  kAllUavComponent, "VISIBILITY_WEAK_RECONNECT",
                  weak_reconnect_formation_weight_scale_);
     publishStatus("6UAV WEAK_RECOVERY COMMAND_SENT");
     ROS_WARN_STREAM(
-        "[6UAV_WEAK_RECOVERY] All cross-group edges remained visible for "
+        "[6UAV_WEAK_RECOVERY] All cross-group edges remained visible and "
+        "close enough for "
         << weak_reconnect_ready_persistence_
         << " s; enabling one-component weak formation scale="
         << weak_reconnect_formation_weight_scale_
@@ -657,6 +835,8 @@ class SixUavAutoSplitBridge {
   ros::NodeHandle private_nh_;
   ros::Subscriber summary_subscriber_;
   ros::Subscriber ack_subscriber_;
+  ros::Subscriber assignment_subscriber_;
+  ros::Subscriber assignment_ack_subscriber_;
   ros::Publisher command_publisher_;
   ros::Publisher status_publisher_;
   ros::Timer timer_;
@@ -675,14 +855,19 @@ class SixUavAutoSplitBridge {
   double merge_wall_half_x_{0.25};
   double merge_after_wall_margin_{1.5};
   double merge_max_edge_distance_{3.0};
-  double merge_ready_persistence_{0.5};
+  double merge_ready_persistence_{0.3};
   bool weak_reconnect_enabled_{true};
-  double weak_reconnect_ready_persistence_{0.5};
+  double weak_reconnect_ready_persistence_{0.3};
   double weak_reconnect_visibility_threshold_{1.0};
-  double weak_reconnect_formation_weight_scale_{0.15};
+  double weak_reconnect_max_edge_distance_{3.00};
+  double weak_reconnect_formation_weight_scale_{0.22};
+  double weak_reconnect_mid_formation_weight_scale_{0.25};
+  double weak_reconnect_final_formation_weight_scale_{0.30};
+  double weak_reconnect_ramp_step_duration_{0.5};
   double split_formation_weight_scale_{0.15};
   double split_progress_sync_weight_scale_{0.0};
   double secondary_hard_split_threshold_{0.20};
+  double secondary_distance_split_threshold_{1.80};
   double ack_timeout_{2.0};
   uint64_t next_epoch_{0};
   ego_planner::FormationTopologyCommand active_command_;
@@ -692,6 +877,7 @@ class SixUavAutoSplitBridge {
   ros::Time candidate_since_;
   ros::Time merge_ready_since_;
   ros::Time weak_reconnect_ready_since_;
+  ros::Time weak_recovery_ramp_since_;
   ros::Time command_stamp_;
   ros::Time last_command_publish_;
   std::array<double, kEdgeCount> edge_scores_{};
@@ -699,6 +885,14 @@ class SixUavAutoSplitBridge {
   std::array<double, kEdgeCount> edge_visibility_{};
   std::array<double, kEdgeCount> edge_distances_{};
   bool criterion_edge_metrics_valid_{false};
+  uint32_t criterion_assignment_generation_{0};
+  uint32_t assignment_generation_{0};
+  uint32_t minimum_merge_assignment_generation_{0};
+  std::array<bool, kUavCount> assignment_acknowledgements_{{
+      false, false, false, false, false, false}};
+  bool assignment_received_{false};
+  bool awaiting_merge_assignment_{false};
+  bool reassignment_completed_for_split_cycle_{false};
   bool weak_recovery_active_{false};
   std::string weak_recovery_source_components_;
 };

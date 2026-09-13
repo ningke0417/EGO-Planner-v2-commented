@@ -38,6 +38,7 @@
     <arg name="obstacle_clearance" default="0.1"/>
     <arg name="manual_formation_split" default="false"/>
     <arg name="general_dynamic_topology_enabled" default="false"/>
+    <arg name="initial_assignment_enabled" default="false"/>
     <arg name="split_side_guidance_enabled" default="false"/>
     <arg name="split_side_guidance_weight" default="600.0"/>
     <arg name="split_side_guidance_margin" default="0.35"/>
@@ -45,6 +46,10 @@
     <arg name="split_subgroup_formation_weight_scale" default="1.0"/>
     <arg name="split_progress_sync_weight_scale" default="0.0"/>
     <arg name="split_progress_sync_deadband" default="0.6"/>
+    <arg name="merge_sync_enabled" default="false"/>
+    <arg name="merge_sync_duration" default="8.0"/>
+    <arg name="merge_sync_backtrack_tolerance" default="0.03"/>
+    <arg name="merge_sync_weight" default="1000.0"/>
     <arg name="subgroup_route_intent_feedback_enabled" default="false"/>
     <arg name="subgroup_route_intent_weight" default="80.0"/>
     <arg name="subgroup_route_intent_corridor_half_width" default="0.25"/>
@@ -185,6 +190,7 @@
         <param name="formation/num" value="$(arg formation_num)" type="int"/>
         <param name="formation/manual_split" value="$(arg manual_formation_split)" type="bool"/>
         <param name="formation/general_dynamic_topology_enabled" value="$(arg general_dynamic_topology_enabled)" type="bool"/>
+        <param name="formation/initial_assignment_enabled" value="$(arg initial_assignment_enabled)" type="bool"/>
         <param name="formation/split_side_guidance_enabled" value="$(arg split_side_guidance_enabled)" type="bool"/>
         <param name="formation/split_side_guidance_weight" value="$(arg split_side_guidance_weight)" type="double"/>
         <param name="formation/split_side_guidance_margin" value="$(arg split_side_guidance_margin)" type="double"/>
@@ -192,6 +198,10 @@
         <param name="formation/split_subgroup_formation_weight_scale" value="$(arg split_subgroup_formation_weight_scale)" type="double"/>
         <param name="formation/split_progress_sync_weight_scale" value="$(arg split_progress_sync_weight_scale)" type="double"/>
         <param name="formation/split_progress_sync_deadband" value="$(arg split_progress_sync_deadband)" type="double"/>
+        <param name="formation/merge_sync_enabled" value="$(arg merge_sync_enabled)" type="bool"/>
+        <param name="formation/merge_sync_duration" value="$(arg merge_sync_duration)" type="double"/>
+        <param name="formation/merge_sync_backtrack_tolerance" value="$(arg merge_sync_backtrack_tolerance)" type="double"/>
+        <param name="formation/merge_sync_weight" value="$(arg merge_sync_weight)" type="double"/>
         <param name="formation/subgroup_route_intent_feedback_enabled" value="$(arg subgroup_route_intent_feedback_enabled)" type="bool"/>
         <param name="formation/subgroup_route_intent_weight" value="$(arg subgroup_route_intent_weight)" type="double"/>
         <param name="formation/subgroup_route_intent_corridor_half_width" value="$(arg subgroup_route_intent_corridor_half_width)" type="double"/>

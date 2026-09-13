@@ -33,6 +33,8 @@ namespace ego_planner
              general_dynamic_topology_enabled_, false);
     nh.param("formation/subgroup_route_intent_feedback_enabled",
              subgroup_route_intent_feedback_enabled_, false);
+    nh.param("formation/initial_assignment_enabled",
+             initial_assignment_enabled_, false);
     nh.param("formation/subgroup_route_intent_timeout",
              subgroup_route_intent_timeout_, 1.0);
     nh.param("formation/subgroup_route_intent_replan_angle",
@@ -60,8 +62,19 @@ namespace ego_planner
     }
     planner_manager_->setManualFormationSplit(manual_formation_split_);
     std::vector<double> pos;
-    nh.getParam("formation/drone" + to_string(planner_manager_->pp_.drone_id), pos);
-    formation_pos_ << pos[0], pos[1], pos[2];
+    formation_slots_.resize(form_num_);
+    formation_assignment_.resize(form_num_);
+    for (int slot = 0; slot < form_num_; ++slot)
+    {
+      formation_assignment_[slot] = slot;
+      if (!nh.getParam("formation/drone" + to_string(slot), pos) || pos.size() != 3)
+      {
+        ROS_ERROR("Missing or invalid formation/drone%d", slot);
+        return;
+      }
+      formation_slots_[slot] << pos[0], pos[1], pos[2];
+    }
+    formation_pos_ = formation_slots_[planner_manager_->pp_.drone_id];
     nh.getParam("formation/start", pos);
     formation_start_ << pos[0], pos[1], pos[2];
 
@@ -107,6 +120,12 @@ namespace ego_planner
     split_progress_sync_scale_sub_ = nh.subscribe<std_msgs::Float64>(
         "/formation_backend/split_progress_sync_scale", 1,
         &EGOReplanFSM::splitProgressSyncScaleCallback, this);
+    if (initial_assignment_enabled_)
+      initial_assignment_sub_ = nh.subscribe<std_msgs::UInt32MultiArray>(
+          "/formation_backend/initial_assignment", 1,
+          &EGOReplanFSM::initialAssignmentCallback, this);
+    else
+      initial_assignment_received_ = true;
     if (subgroup_route_intent_feedback_enabled_)
       subgroup_route_intent_sub_ = nh.subscribe<std_msgs::Float64MultiArray>(
           "/subgroup_route_intent_4uav/intents", 1,
@@ -129,6 +148,8 @@ namespace ego_planner
         1, true);
     topology_ack_pub_ = nh.advertise<FormationTopologyAck>(
         "/formation_backend/topology_ack", 10, false);
+    assignment_ack_pub_ = nh.advertise<std_msgs::UInt32MultiArray>(
+        "/formation_backend/assignment_ack", 20, false);
     subgroup_route_intent_status_pub_ = nh.advertise<std_msgs::String>(
         "/formation_backend/drone_" +
             std::to_string(planner_manager_->pp_.drone_id) +
@@ -165,7 +186,8 @@ namespace ego_planner
 
       ROS_WARN("Waiting for odometry and trigger");
 
-      while (ros::ok() && (!have_odom_ || !have_trigger_))
+      while (ros::ok() &&
+             (!have_odom_ || !have_trigger_ || !initial_assignment_received_))
       {
         ros::spinOnce();
         ros::Duration(0.001).sleep();
@@ -204,9 +226,19 @@ namespace ego_planner
         static_cast<int>(dynamic_formation_groups_.size()) < form_num_ ||
         form_num_ != 4)
       return true;
-    return dynamic_formation_groups_[0] == dynamic_formation_groups_[1] &&
-           dynamic_formation_groups_[2] == dynamic_formation_groups_[3] &&
-           dynamic_formation_groups_[0] != dynamic_formation_groups_[2];
+    std::vector<int> drone_for_slot(form_num_, -1);
+    for (int drone = 0; drone < form_num_; ++drone)
+      drone_for_slot[formation_assignment_[drone]] = drone;
+    const int front_left = drone_for_slot[0];
+    const int front_right = drone_for_slot[1];
+    const int rear_left = drone_for_slot[2];
+    const int rear_right = drone_for_slot[3];
+    return dynamic_formation_groups_[front_left] ==
+               dynamic_formation_groups_[front_right] &&
+           dynamic_formation_groups_[rear_left] ==
+               dynamic_formation_groups_[rear_right] &&
+           dynamic_formation_groups_[front_left] !=
+               dynamic_formation_groups_[rear_left];
   }
 
   void EGOReplanFSM::dynamicTopologyCallback(const std_msgs::String::ConstPtr &msg)
@@ -222,7 +254,13 @@ namespace ego_planner
       dynamic_topology_active_ = false;
       dynamic_formation_groups_.clear();
       planner_manager_->setDynamicFormationGroups(dynamic_formation_groups_);
+      if (have_odom_)
+        planner_manager_->beginMergeSynchronization(odom_pos_);
       publishFormationGroupState();
+      if (have_target_ &&
+          (exec_state_ == EXEC_TRAJ || exec_state_ == REPLAN_TRAJ ||
+           exec_state_ == GEN_NEW_TRAJ))
+        changeFSMExecState(REPLAN_TRAJ, "DYNAMIC_TOPOLOGY_MERGE");
       return;
     }
 
@@ -240,6 +278,17 @@ namespace ego_planner
       return;
     }
 
+    const int previous_component_count =
+        dynamic_topology_active_ && !dynamic_formation_groups_.empty()
+            ? *std::max_element(dynamic_formation_groups_.begin(),
+                                dynamic_formation_groups_.end()) + 1
+            : 1;
+    const int next_component_count =
+        *std::max_element(groups.begin(), groups.end()) + 1;
+    const bool components_merged =
+        dynamic_topology_active_ &&
+        next_component_count < previous_component_count;
+
     dynamic_formation_groups_ = groups;
     dynamic_topology_active_ = true;
     if (!manual_formation_split_)
@@ -248,6 +297,8 @@ namespace ego_planner
       planner_manager_->setManualFormationSplit(true);
     }
     planner_manager_->setDynamicFormationGroups(dynamic_formation_groups_);
+    if (components_merged && have_odom_)
+      planner_manager_->beginMergeSynchronization(odom_pos_);
     publishFormationGroupState();
 
     if (!dynamicTopologyMatchesLegacySplit() && subgroup_route_intent_active_)
@@ -394,6 +445,17 @@ namespace ego_planner
                          {{0, 3}}, {{1, 4}}, {{2, 5}}};
     else
       formation_edges = {{{0, 1}}, {{1, 3}}, {{3, 2}}, {{2, 0}}};
+    if (formation_assignment_.size() == static_cast<std::size_t>(form_num_))
+    {
+      std::vector<int> drone_for_slot(form_num_, -1);
+      for (int drone = 0; drone < form_num_; ++drone)
+        drone_for_slot[formation_assignment_[drone]] = drone;
+      for (auto &edge : formation_edges)
+      {
+        edge[0] = drone_for_slot[edge[0]];
+        edge[1] = drone_for_slot[edge[1]];
+      }
+    }
     for (std::size_t edge = 0; edge < formation_edges.size(); ++edge)
     {
       if (edge > 0) edges << " ";
@@ -479,6 +541,21 @@ namespace ego_planner
         std::fabs(formation_scale - split_formation_scale_) >= 1e-6 ||
         std::fabs(progress_scale - split_progress_sync_scale_) >= 1e-6;
 
+    const int previous_component_count =
+        dynamic_topology_active_ && !dynamic_formation_groups_.empty()
+            ? *std::max_element(dynamic_formation_groups_.begin(),
+                                dynamic_formation_groups_.end()) + 1
+            : 1;
+    const int next_component_count = groups.empty()
+                                         ? 1
+                                         : *std::max_element(groups.begin(),
+                                                             groups.end()) + 1;
+    const bool components_merged = topology_changed &&
+        ((topology_mode_ == FormationTopologyCommand::SPLIT &&
+          msg->mode == FormationTopologyCommand::INTACT) ||
+         (msg->mode == FormationTopologyCommand::SPLIT &&
+          next_component_count < previous_component_count));
+
     topology_epoch_ = msg->epoch;
     topology_mode_ = msg->mode;
     topology_components_ = components;
@@ -492,6 +569,8 @@ namespace ego_planner
     planner_manager_->setDynamicFormationGroups(dynamic_formation_groups_);
     planner_manager_->setSplitSubgroupFormationWeightScale(split_formation_scale_);
     planner_manager_->setSplitProgressSyncWeightScale(split_progress_sync_scale_);
+    if (components_merged && have_odom_)
+      planner_manager_->beginMergeSynchronization(odom_pos_);
 
     if ((!manual_formation_split_ || !dynamicTopologyMatchesLegacySplit()) &&
         subgroup_route_intent_active_)
@@ -512,6 +591,75 @@ namespace ego_planner
         (exec_state_ == EXEC_TRAJ || exec_state_ == REPLAN_TRAJ ||
          exec_state_ == GEN_NEW_TRAJ))
       changeFSMExecState(REPLAN_TRAJ, "TOPOLOGY_COMMAND");
+  }
+
+  void EGOReplanFSM::initialAssignmentCallback(
+      const std_msgs::UInt32MultiArray::ConstPtr &msg)
+  {
+    const bool versioned =
+        msg->data.size() == static_cast<std::size_t>(form_num_ + 1);
+    if (!versioned &&
+        msg->data.size() != static_cast<std::size_t>(form_num_))
+    {
+      ROS_ERROR("[FORMATION_ASSIGNMENT] expected %d or %d entries, received %zu",
+                form_num_, form_num_ + 1, msg->data.size());
+      return;
+    }
+    const uint32_t generation = versioned ? msg->data[0] : 0;
+    if ((versioned && generation <= assignment_generation_) ||
+        (!versioned && initial_assignment_received_))
+      return;
+    const std::size_t offset = versioned ? 1 : 0;
+
+    std::vector<int> assignment(form_num_, -1);
+    std::vector<bool> used(form_num_, false);
+    for (int id = 0; id < form_num_; ++id)
+    {
+      const int slot = static_cast<int>(msg->data[id + offset]);
+      if (slot < 0 || slot >= form_num_ || used[slot])
+      {
+        ROS_ERROR("[FORMATION_ASSIGNMENT] rejected invalid permutation");
+        return;
+      }
+      assignment[id] = slot;
+      used[slot] = true;
+    }
+    if (!planner_manager_->setFormationAssignment(assignment))
+    {
+      ROS_ERROR("[FORMATION_ASSIGNMENT] optimizer rejected assignment");
+      return;
+    }
+
+    const int my_id = planner_manager_->pp_.drone_id;
+    const std::vector<int> previous_assignment = formation_assignment_;
+    const Eigen::Vector3d previous_formation_pos = formation_pos_;
+    const bool changed = assignment != formation_assignment_;
+    const bool my_slot_changed =
+        assignment[my_id] != formation_assignment_[my_id];
+    formation_assignment_ = assignment;
+    formation_pos_ = formation_slots_[assignment[my_id]];
+    if (my_slot_changed && have_target_ && !refreshAssignedWaypointTarget())
+    {
+      planner_manager_->setFormationAssignment(previous_assignment);
+      formation_assignment_ = previous_assignment;
+      formation_pos_ = previous_formation_pos;
+      ROS_ERROR_STREAM("[FORMATION_ASSIGNMENT] generation=" << generation
+                       << " unable to refresh assigned waypoint; assignment rolled back");
+      return;
+    }
+    assignment_generation_ = generation;
+    initial_assignment_received_ = true;
+    std_msgs::UInt32MultiArray ack;
+    ack.data = {generation, static_cast<uint32_t>(my_id)};
+    assignment_ack_pub_.publish(ack);
+    ROS_WARN_STREAM("[FORMATION_ASSIGNMENT] generation=" << generation
+                    << " drone " << my_id << " assigned slot "
+                    << assignment[my_id] << " offset="
+                    << formation_pos_.transpose());
+    if (changed && have_target_ &&
+        (exec_state_ == EXEC_TRAJ || exec_state_ == REPLAN_TRAJ ||
+         exec_state_ == GEN_NEW_TRAJ))
+      changeFSMExecState(REPLAN_TRAJ, "FORMATION_REASSIGNMENT");
   }
 
   void EGOReplanFSM::manualFormationSplitCallback(const std_msgs::Bool::ConstPtr &msg)
@@ -672,9 +820,20 @@ namespace ego_planner
     exec_timer_.stop(); // To avoid blockage
     std_msgs::Empty heartbeat_msg;
     heartbeat_pub_.publish(heartbeat_msg);
+    const ros::Time now = ros::Time::now();
+    if (initial_assignment_enabled_ && initial_assignment_received_ &&
+        (last_assignment_ack_stamp_.isZero() ||
+         (now - last_assignment_ack_stamp_).toSec() >= 0.5))
+    {
+      std_msgs::UInt32MultiArray ack;
+      ack.data = {assignment_generation_,
+                  static_cast<uint32_t>(planner_manager_->pp_.drone_id)};
+      assignment_ack_pub_.publish(ack);
+      last_assignment_ack_stamp_ = now;
+    }
 
     if (subgroup_route_intent_active_ &&
-        (ros::Time::now() - subgroup_route_intent_stamp_).toSec() >
+        (now - subgroup_route_intent_stamp_).toSec() >
             subgroup_route_intent_timeout_)
     {
       subgroup_route_intent_active_ = false;
@@ -708,7 +867,7 @@ namespace ego_planner
 
     case WAIT_TARGET:
     {
-      if (!have_target_ || !have_trigger_)
+      if (!have_target_ || !have_trigger_ || !initial_assignment_received_)
         goto force_return; // return;
       else
       {
@@ -1378,12 +1537,53 @@ namespace ego_planner
     return true;
   }
 
+  Eigen::Vector3d EGOReplanFSM::assignedWaypointTarget(
+      const Eigen::Vector3d &next_wp,
+      const Eigen::Vector3d &previous_wp) const
+  {
+    const Eigen::Vector3d displacement = next_wp - previous_wp;
+    if (displacement.head<2>().norm() < 1e-6)
+      return next_wp + formation_pos_;
+    const Eigen::Vector3d dir = displacement.normalized();
+    return next_wp +
+           Eigen::Vector3d(dir(0) * formation_pos_(0) -
+                               dir(1) * formation_pos_(1),
+                           dir(1) * formation_pos_(0) +
+                               dir(0) * formation_pos_(1),
+                           formation_pos_(2));
+  }
+
+  bool EGOReplanFSM::refreshAssignedWaypointTarget()
+  {
+    if (!have_odom_ || wpt_id_ < 0 ||
+        wpt_id_ >= static_cast<int>(wps_.size()))
+      return false;
+
+    const Eigen::Vector3d previous_end = end_pt_;
+    const Eigen::Vector3d assigned_end =
+        assignedWaypointTarget(wps_[wpt_id_], formation_start_);
+    std::vector<Eigen::Vector3d> one_pt_wps{assigned_end};
+    if (!planner_manager_->planGlobalTrajWaypoints(
+            odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), one_pt_wps,
+            Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), false))
+      return false;
+
+    end_pt_ = assigned_end;
+    have_new_target_ = true;
+    touch_goal_ = false;
+    visualization_->displayGoalPoint(
+        assigned_end, Eigen::Vector4d(1.0, 0.5, 0.0, 1.0), 0.25,
+        form_num_ + planner_manager_->pp_.drone_id);
+    ROS_WARN_STREAM("[FORMATION_ASSIGNMENT_TARGET] drone="
+                    << planner_manager_->pp_.drone_id
+                    << " old_end=(" << previous_end.transpose()
+                    << ") new_end=(" << assigned_end.transpose() << ")");
+    return true;
+  }
+
   void EGOReplanFSM::planNextWaypoint(const Eigen::Vector3d next_wp, const Eigen::Vector3d previous_wp)
   {
-    Eigen::Vector3d dir = (next_wp - previous_wp).normalized();
-    end_pt_ = next_wp + Eigen::Vector3d(dir(0) * formation_pos_(0) - dir(1) * formation_pos_(1),
-                                        dir(1) * formation_pos_(0) + dir(0) * formation_pos_(1),
-                                        formation_pos_(2));
+    end_pt_ = assignedWaypointTarget(next_wp, previous_wp);
 
     bool success = false;
     std::vector<Eigen::Vector3d> one_pt_wps;

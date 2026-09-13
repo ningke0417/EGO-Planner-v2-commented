@@ -11,6 +11,7 @@
 #include <std_msgs/ColorRGBA.h>
 #include <std_msgs/Header.h>
 #include <std_msgs/String.h>
+#include <std_msgs/UInt32MultiArray.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 
@@ -18,9 +19,10 @@ namespace {
 
 constexpr std::size_t kUavCount = 6;
 constexpr std::size_t kEdgeCount = 7;
-const std::array<std::array<int, 2>, kEdgeCount> kEdges{{
+const std::array<std::array<int, 2>, kEdgeCount> kSlotEdges{{
     {{0, 1}}, {{1, 2}}, {{3, 4}}, {{4, 5}},
     {{0, 3}}, {{1, 4}}, {{2, 5}}}};
+std::array<std::array<int, 2>, kEdgeCount> gEdges = kSlotEdges;
 
 class SixUavBackendVisualizer {
  public:
@@ -45,11 +47,9 @@ class SixUavBackendVisualizer {
             group_seen_[id] = true;
           });
     }
-    status_subscriber_ = nh_.subscribe<std_msgs::String>(
-        "/formation_backend/auto_split_status", 1,
-        [this](const std_msgs::String::ConstPtr& message) {
-          auto_split_status_ = message->data;
-        });
+    assignment_subscriber_ = nh_.subscribe<std_msgs::UInt32MultiArray>(
+        "/formation_backend/initial_assignment", 1,
+        &SixUavBackendVisualizer::assignmentCallback, this);
     marker_publisher_ = private_nh_.advertise<visualization_msgs::MarkerArray>(
         "markers", 1, true);
     timer_ = nh_.createTimer(ros::Duration(1.0 / publish_rate_),
@@ -58,6 +58,39 @@ class SixUavBackendVisualizer {
   }
 
  private:
+  void assignmentCallback(const std_msgs::UInt32MultiArray::ConstPtr& message) {
+    const bool versioned = message->data.size() == kUavCount + 1;
+    if (!versioned && message->data.size() != kUavCount) {
+      ROS_ERROR_STREAM("[6UAV_VISUALIZER] Reject assignment with size "
+                       << message->data.size());
+      return;
+    }
+    const uint32_t generation = versioned ? message->data[0] : 0;
+    if ((versioned && generation <= assignment_generation_) ||
+        (!versioned && assignment_received_))
+      return;
+    const std::size_t offset = versioned ? 1 : 0;
+    std::array<int, kUavCount> slot_to_drone{};
+    std::array<bool, kUavCount> seen{{false, false, false, false, false, false}};
+    for (std::size_t drone = 0; drone < kUavCount; ++drone) {
+      const std::size_t slot = message->data[drone + offset];
+      if (slot >= kUavCount || seen[slot]) {
+        ROS_ERROR("[6UAV_VISUALIZER] Reject non-permutation assignment");
+        return;
+      }
+      seen[slot] = true;
+      slot_to_drone[slot] = static_cast<int>(drone);
+    }
+    for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
+      gEdges[edge][0] = slot_to_drone[kSlotEdges[edge][0]];
+      gEdges[edge][1] = slot_to_drone[kSlotEdges[edge][1]];
+    }
+    assignment_generation_ = generation;
+    assignment_received_ = true;
+    ROS_INFO("[6UAV_VISUALIZER] Applied formation assignment generation=%u.",
+             generation);
+  }
+
   std_msgs::ColorRGBA groupColor(const std::string& group,
                                  double alpha = 1.0) const {
     // Keep the most common component IDs visually stable across split/merge.
@@ -154,8 +187,8 @@ class SixUavBackendVisualizer {
   void addEdgeMarkers(const std_msgs::Header& header,
                       visualization_msgs::MarkerArray* output) const {
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
-      const int first = kEdges[edge][0];
-      const int second = kEdges[edge][1];
+      const int first = gEdges[edge][0];
+      const int second = gEdges[edge][1];
       const bool known = group_seen_[first] && group_seen_[second];
       const bool connected = sameGroup(first, second);
 
@@ -188,20 +221,6 @@ class SixUavBackendVisualizer {
         }
       }
       output->markers.push_back(line);
-
-      visualization_msgs::Marker label;
-      label.header = header;
-      label.ns = "six_uav_backend_edge_labels";
-      label.id = static_cast<int>(edge);
-      label.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
-      label.action = visualization_msgs::Marker::ADD;
-      label.pose.orientation.w = 1.0;
-      label.pose.position = interpolatedPoint(first, second, 0.5, 0.20);
-      label.scale.z = 0.18;
-      label.color = line.color;
-      label.text = std::to_string(first) + "-" + std::to_string(second) +
-                   (connected ? " LINK" : (known ? " CUT" : " WAIT"));
-      output->markers.push_back(label);
     }
   }
 
@@ -265,15 +284,14 @@ class SixUavBackendVisualizer {
     state_label.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
     state_label.action = visualization_msgs::Marker::ADD;
     state_label.pose.orientation.w = 1.0;
-    state_label.pose.position = formationCenter(1.05);
-    state_label.scale.z = 0.28;
+    state_label.pose.position = formationCenter(0.90);
+    state_label.scale.z = 0.24;
     state_label.color.a = 1.0;
     state_label.color.r = 1.0;
     state_label.color.g = allGroupsSeen() ? 0.9 : 0.55;
     state_label.color.b = allGroupsSeen() ? 0.2 : 0.1;
-    state_label.text = "6UAV BACKEND  " + topologyText();
-    if (!auto_split_status_.empty())
-      state_label.text += "\n" + auto_split_status_;
+    state_label.text = "APPLIED " + topologyText() + "  G" +
+                       std::to_string(assignment_generation_);
     output.markers.push_back(state_label);
 
     marker_publisher_.publish(output);
@@ -283,7 +301,7 @@ class SixUavBackendVisualizer {
   ros::NodeHandle private_nh_;
   std::array<ros::Subscriber, kUavCount> odom_subscribers_;
   std::array<ros::Subscriber, kUavCount> group_subscribers_;
-  ros::Subscriber status_subscriber_;
+  ros::Subscriber assignment_subscriber_;
   ros::Publisher marker_publisher_;
   ros::Timer timer_;
   std::array<geometry_msgs::Point, kUavCount> positions_{};
@@ -294,8 +312,9 @@ class SixUavBackendVisualizer {
                                           false, false, false}};
   std::string odom_suffix_;
   std::string frame_id_;
-  std::string auto_split_status_;
   double publish_rate_{10.0};
+  uint32_t assignment_generation_{0};
+  bool assignment_received_{false};
 };
 
 }  // namespace

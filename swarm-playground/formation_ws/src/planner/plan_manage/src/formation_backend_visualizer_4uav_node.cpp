@@ -11,14 +11,16 @@
 #include <ros/ros.h>
 #include <std_msgs/Header.h>
 #include <std_msgs/String.h>
+#include <std_msgs/UInt32MultiArray.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 
 namespace {
 
 constexpr std::size_t kUavCount = 4;
-const std::array<std::array<int, 2>, 4> kEdges{
+const std::array<std::array<int, 2>, 4> kSlotEdges{
     {{{0, 1}}, {{1, 3}}, {{3, 2}}, {{2, 0}}}};
+std::array<std::array<int, 2>, 4> gEdges = kSlotEdges;
 
 class BackendVisualizer {
  public:
@@ -57,6 +59,9 @@ class BackendVisualizer {
         [this](const std_msgs::String::ConstPtr& message) {
           auto_split_status_ = message->data;
         });
+    assignment_subscriber_ = nh_.subscribe<std_msgs::UInt32MultiArray>(
+        "/formation_backend/initial_assignment", 1,
+        &BackendVisualizer::assignmentCallback, this);
     marker_publisher_ = nh_.advertise<visualization_msgs::MarkerArray>(
         "/formation_backend/markers", 1, true);
     subgroup_summary_publisher_ =
@@ -77,6 +82,21 @@ class BackendVisualizer {
     bool spacing_ok = true;
     bool clearance_ok = true;
   };
+
+  void assignmentCallback(const std_msgs::UInt32MultiArray::ConstPtr& message) {
+    if (assignment_locked_ || message->data.size() != kUavCount) return;
+    std::array<int, kUavCount> drone_for_slot{{-1, -1, -1, -1}};
+    for (std::size_t drone = 0; drone < kUavCount; ++drone) {
+      const std::size_t slot = message->data[drone];
+      if (slot >= kUavCount || drone_for_slot[slot] >= 0) return;
+      drone_for_slot[slot] = static_cast<int>(drone);
+    }
+    for (std::size_t edge = 0; edge < gEdges.size(); ++edge) {
+      gEdges[edge] = {{drone_for_slot[kSlotEdges[edge][0]],
+                       drone_for_slot[kSlotEdges[edge][1]]}};
+    }
+    assignment_locked_ = true;
+  }
 
 	  std::string state() const {
 	    for (std::size_t id = 0; id < kUavCount; ++id) {
@@ -220,8 +240,8 @@ class BackendVisualizer {
 	    const std::string backend_state = state();
 	    if (backend_state == "WAITING") return;
 	    const bool split = backend_state.find("SPLIT") == 0;
-    const PairDiagnostics g0 = pairDiagnostics(0, 1);
-    const PairDiagnostics g1 = pairDiagnostics(2, 3);
+    const PairDiagnostics g0 = pairDiagnostics(gEdges[0][0], gEdges[0][1]);
+    const PairDiagnostics g1 = pairDiagnostics(gEdges[2][0], gEdges[2][1]);
     publishSubgroupSummary(backend_state, g0, g1);
 
     visualization_msgs::MarkerArray array;
@@ -229,13 +249,13 @@ class BackendVisualizer {
 	    std_msgs::Header marker_header;
 	    marker_header.frame_id = frame_id_;
 	    marker_header.stamp = ros::Time::now();
-	    for (std::size_t edge = 0; edge < kEdges.size(); ++edge) {
+	    for (std::size_t edge = 0; edge < gEdges.size(); ++edge) {
 	      visualization_msgs::Marker edges;
       edges.header = marker_header;
       edges.ns = "formation_backend_edges";
       edges.id = static_cast<int>(edge);
       edges.type = visualization_msgs::Marker::LINE_LIST;
-      if (split && !sameBackendGroup(kEdges[edge][0], kEdges[edge][1])) {
+      if (split && !sameBackendGroup(gEdges[edge][0], gEdges[edge][1])) {
         edges.action = visualization_msgs::Marker::DELETE;
         array.markers.push_back(edges);
         continue;
@@ -247,8 +267,8 @@ class BackendVisualizer {
       edges.color.b = 1.0;
       if (edge == 0) edges.color = pairColor(g0, split);
       if (edge == 2) edges.color = pairColor(g1, split);
-      edges.points.push_back(positions_[kEdges[edge][0]]);
-      edges.points.push_back(positions_[kEdges[edge][1]]);
+      edges.points.push_back(positions_[gEdges[edge][0]]);
+      edges.points.push_back(positions_[gEdges[edge][1]]);
       array.markers.push_back(edges);
     }
 
@@ -276,6 +296,7 @@ class BackendVisualizer {
   std::array<ros::Subscriber, kUavCount> odom_subscribers_;
   std::array<ros::Subscriber, kUavCount> group_subscribers_;
   ros::Subscriber auto_split_status_subscriber_;
+  ros::Subscriber assignment_subscriber_;
   ros::Publisher marker_publisher_;
   ros::Publisher subgroup_summary_publisher_;
 	  ros::Timer timer_;
@@ -298,6 +319,7 @@ class BackendVisualizer {
   double desired_pair_distance_ = 1.0;
   double max_pair_error_ = 0.35;
   double side_deadband_ = 0.20;
+  bool assignment_locked_ = false;
 };
 
 }  // namespace

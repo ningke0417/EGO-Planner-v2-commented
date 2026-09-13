@@ -58,7 +58,9 @@ namespace ego_planner
     }
     ~TrajContainer() {}
 
-    void setGlobalTraj(const poly_traj::Trajectory &trajectory, const double &world_time)
+    void setGlobalTraj(const poly_traj::Trajectory &trajectory,
+                       const double &world_time,
+                       const bool reset_local_trajectory = true)
     {
       global_traj.traj = trajectory;
       global_traj.duration = trajectory.getTotalDuration();
@@ -66,9 +68,12 @@ namespace ego_planner
       global_traj.glb_t_of_lc_tgt = world_time;
       global_traj.last_glb_t_of_lc_tgt = -1.0;
 
-      local_traj.drone_id = -1;
-      local_traj.duration = 0.0;
-      local_traj.traj_id = 0;
+      if (reset_local_trajectory)
+      {
+        local_traj.drone_id = -1;
+        local_traj.duration = 0.0;
+        local_traj.traj_id = 0;
+      }
     }
 
     void setLocalTraj(const poly_traj::Trajectory &trajectory, const PtsChk_t &pts_to_chk, const double &world_time, const int drone_id = -1)

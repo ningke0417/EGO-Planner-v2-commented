@@ -10,17 +10,19 @@
 #include <std_msgs/String.h>
 #include <ego_planner/FormationTopologyAck.h>
 #include <ego_planner/FormationTopologyCommand.h>
+#include <std_msgs/UInt32MultiArray.h>
 
 namespace {
 
 constexpr std::size_t kUavCount = 4;
 constexpr std::size_t kEdgeCount = 4;
-constexpr std::array<std::array<int, 2>, kEdgeCount> kEdges{{
+constexpr std::array<std::array<int, 2>, kEdgeCount> kSlotEdges{{
     {{0, 1}},
     {{1, 3}},
     {{3, 2}},
     {{2, 0}},
 }};
+std::array<std::array<int, 2>, kEdgeCount> gEdges = kSlotEdges;
 
 class AutoSplitBridge {
  public:
@@ -126,6 +128,9 @@ class AutoSplitBridge {
     topology_ack_subscriber_ = nh_.subscribe<ego_planner::FormationTopologyAck>(
         "/formation_backend/topology_ack", 20,
         &AutoSplitBridge::topologyAckCallback, this);
+    assignment_subscriber_ = nh_.subscribe<std_msgs::UInt32MultiArray>(
+        "/formation_backend/initial_assignment", 1,
+        &AutoSplitBridge::assignmentCallback, this);
 
     // One latched message carries a complete topology snapshot.  Re-publishing
     // while waiting for ACKs keeps the same epoch and is idempotent downstream.
@@ -205,6 +210,27 @@ class AutoSplitBridge {
       return true;
     }
     return false;
+  }
+
+  void assignmentCallback(const std_msgs::UInt32MultiArray::ConstPtr& message) {
+    if (assignment_locked_ || message->data.size() != kUavCount) return;
+    std::array<int, kUavCount> drone_for_slot{{-1, -1, -1, -1}};
+    for (std::size_t drone = 0; drone < kUavCount; ++drone) {
+      const std::size_t slot = message->data[drone];
+      if (slot >= kUavCount || drone_for_slot[slot] >= 0) {
+        ROS_ERROR("[INITIAL_ASSIGNMENT] split bridge rejected invalid permutation");
+        return;
+      }
+      drone_for_slot[slot] = static_cast<int>(drone);
+    }
+    for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
+      gEdges[edge] = {{drone_for_slot[kSlotEdges[edge][0]],
+                       drone_for_slot[kSlotEdges[edge][1]]}};
+    }
+    assignment_locked_ = true;
+    active_edges_.fill(true);
+    active_edges_valid_ = true;
+    ROS_WARN("[INITIAL_ASSIGNMENT] split bridge slot topology mapped to physical UAV IDs");
   }
 
   void criterionCallback(const std_msgs::String::ConstPtr& message) {
@@ -465,8 +491,8 @@ class AutoSplitBridge {
   }
 
   std::string edgeText(std::size_t edge) const {
-    return std::to_string(kEdges[edge][0]) + "-" +
-           std::to_string(kEdges[edge][1]);
+    return std::to_string(gEdges[edge][0]) + "-" +
+           std::to_string(gEdges[edge][1]);
   }
 
   bool parseComponentGroups(const std::string& components,
@@ -566,7 +592,7 @@ class AutoSplitBridge {
     }
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
       active_edges_[edge] =
-          groups[kEdges[edge][0]] == groups[kEdges[edge][1]];
+          groups[gEdges[edge][0]] == groups[gEdges[edge][1]];
     }
     active_edges_valid_ = true;
   }
@@ -590,7 +616,7 @@ class AutoSplitBridge {
     };
 
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
-      if (active_edges_[edge]) unite(kEdges[edge][0], kEdges[edge][1]);
+      if (active_edges_[edge]) unite(gEdges[edge][0], gEdges[edge][1]);
     }
 
     std::vector<std::vector<int>> components;
@@ -629,7 +655,7 @@ class AutoSplitBridge {
 
     std::array<int, kUavCount> groups;
     if (!parseComponentGroups(criterion_components, &groups)) return false;
-    return groups[kEdges[edge][0]] != groups[kEdges[edge][1]];
+    return groups[gEdges[edge][0]] != groups[gEdges[edge][1]];
   }
 
   void resetEdgeMergeHold(std::size_t edge) {
@@ -1182,6 +1208,7 @@ class AutoSplitBridge {
   ros::Subscriber criterion_subscriber_;
   ros::Subscriber criterion_summary_subscriber_;
   ros::Subscriber topology_ack_subscriber_;
+  ros::Subscriber assignment_subscriber_;
   ros::Publisher topology_command_publisher_;
   ros::Publisher status_publisher_;
   ros::Timer timer_;
@@ -1253,6 +1280,7 @@ class AutoSplitBridge {
   std::array<bool, kEdgeCount> active_edges_{{true, true, true, true}};
   bool active_edges_valid_ = false;
   bool edge_recovery_phase_ = false;
+  bool assignment_locked_ = false;
 };
 
 }  // namespace

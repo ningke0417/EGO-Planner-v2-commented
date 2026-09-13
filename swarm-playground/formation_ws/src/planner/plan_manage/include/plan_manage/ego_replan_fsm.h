@@ -14,6 +14,7 @@
 #include <std_msgs/Float64.h>
 #include <std_msgs/Float64MultiArray.h>
 #include <std_msgs/String.h>
+#include <std_msgs/UInt32MultiArray.h>
 #include <vector>
 #include <visualization_msgs/Marker.h>
 
@@ -85,6 +86,11 @@ namespace ego_planner
     bool manual_formation_split_;
     bool general_dynamic_topology_enabled_{false};
     bool subgroup_route_intent_feedback_enabled_;
+    bool initial_assignment_enabled_{false};
+    bool initial_assignment_received_{false};
+    std::vector<Eigen::Vector3d> formation_slots_;
+    std::vector<int> formation_assignment_;
+    uint32_t assignment_generation_{0};
     bool subgroup_route_intent_active_{false};
     bool dynamic_topology_active_{false};
     std::vector<int> dynamic_formation_groups_;
@@ -101,6 +107,7 @@ namespace ego_planner
     double split_progress_sync_scale_{-1.0};
     ros::Time subgroup_route_intent_stamp_;
     ros::Time subgroup_route_intent_last_replan_;
+    ros::Time last_assignment_ack_stamp_;
 
     bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_, touch_goal_, mandatory_stop_;
     bool first_wall_violation_latched_{false};
@@ -121,8 +128,8 @@ namespace ego_planner
     /* ROS utils */
     ros::NodeHandle node_;
     ros::Timer exec_timer_, safety_timer_;
-    ros::Subscriber waypoint_sub_, odom_sub_, trigger_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, manual_split_sub_, dynamic_topology_sub_, topology_command_sub_, split_formation_scale_sub_, split_progress_sync_scale_sub_, subgroup_route_intent_sub_;
-    ros::Publisher poly_traj_pub_, data_disp_pub_, broadcast_ploytraj_pub_, heartbeat_pub_, ground_height_pub_, formation_group_pub_, topology_ack_pub_, subgroup_route_intent_status_pub_, safety_status_pub_, first_wall_violation_pub_;
+    ros::Subscriber waypoint_sub_, odom_sub_, trigger_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, manual_split_sub_, dynamic_topology_sub_, topology_command_sub_, split_formation_scale_sub_, split_progress_sync_scale_sub_, subgroup_route_intent_sub_, initial_assignment_sub_;
+    ros::Publisher poly_traj_pub_, data_disp_pub_, broadcast_ploytraj_pub_, heartbeat_pub_, ground_height_pub_, formation_group_pub_, topology_ack_pub_, assignment_ack_pub_, subgroup_route_intent_status_pub_, safety_status_pub_, first_wall_violation_pub_;
     ros::Time last_safety_status_stamp_;
 
     /* state machine functions */
@@ -152,10 +159,16 @@ namespace ego_planner
     void waypointCallback(const geometry_msgs::PoseStampedPtr &msg);
     // void planGlobalTrajbyGivenWps();
     void readGivenWpsAndPlan();
+    Eigen::Vector3d assignedWaypointTarget(
+        const Eigen::Vector3d &next_wp,
+        const Eigen::Vector3d &previous_wp) const;
+    bool refreshAssignedWaypointTarget();
     void planNextWaypoint(const Eigen::Vector3d next_wp, const Eigen::Vector3d previous_wp);
 
     /* input-output */
     void mandatoryStopCallback(const std_msgs::Empty &msg);
+    void initialAssignmentCallback(
+        const std_msgs::UInt32MultiArray::ConstPtr &msg);
     void manualFormationSplitCallback(const std_msgs::Bool::ConstPtr &msg);
     void dynamicTopologyCallback(const std_msgs::String::ConstPtr &msg);
     void formationTopologyCommandCallback(

@@ -17,6 +17,7 @@
 #include <sensor_msgs/PointCloud2.h>
 #include <std_msgs/Float64MultiArray.h>
 #include <std_msgs/String.h>
+#include <std_msgs/UInt32MultiArray.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 
@@ -35,9 +36,10 @@ constexpr std::size_t kUavCount = 6;
 constexpr std::size_t kEdgeCount = 7;
 // The existing six-UAV formation is a 2x3 grid.  Only nearest-neighbour
 // formation constraints participate in topology decisions.
-const std::array<std::array<int, 2>, kEdgeCount> kEdges{{
+const std::array<std::array<int, 2>, kEdgeCount> kSlotEdges{{
     {{0, 1}}, {{1, 2}}, {{3, 4}}, {{4, 5}},
     {{0, 3}}, {{1, 4}}, {{2, 5}}}};
+std::array<std::array<int, 2>, kEdgeCount> gEdges = kSlotEdges;
 
 double planarDistance(const Vec3& first, const Vec3& second) {
   return std::hypot(first.x - second.x, first.y - second.y);
@@ -52,7 +54,7 @@ geometry_msgs::Point pointMessage(const Vec3& value) {
 }
 
 std::string edgeName(std::size_t edge) {
-  return std::to_string(kEdges[edge][0]) + std::to_string(kEdges[edge][1]);
+  return std::to_string(gEdges[edge][0]) + std::to_string(gEdges[edge][1]);
 }
 
 class SixUavShadow {
@@ -74,6 +76,9 @@ class SixUavShadow {
     }
     obstacle_cloud_subscriber_ = nh_.subscribe<sensor_msgs::PointCloud2>(
         obstacle_cloud_topic_, 1, &SixUavShadow::obstacleCloudCallback, this);
+    assignment_subscriber_ = nh_.subscribe<std_msgs::UInt32MultiArray>(
+        "/formation_backend/initial_assignment", 1,
+        &SixUavShadow::assignmentCallback, this);
     state_pub_ = private_nh_.advertise<std_msgs::String>("state", 1, true);
     score_pub_ =
         private_nh_.advertise<std_msgs::Float64MultiArray>("scores", 1, true);
@@ -89,6 +94,9 @@ class SixUavShadow {
         "01,12,34,45,03,14,25 split="
         << split_threshold_ << " hard_split=" << hard_split_threshold_
         << " merge=" << merge_threshold_
+        << " distance_split=" << distance_split_threshold_ << " m"
+        << " hard_distance_split=" << hard_distance_split_threshold_ << " m"
+        << " distance_merge=" << distance_merge_threshold_ << " m"
         << " persistence=" << persistence_distance_
         << " m front_to_rear_propagation="
         << (rear_split_propagation_enabled_ ? "enabled" : "disabled")
@@ -98,6 +106,49 @@ class SixUavShadow {
 
  private:
   enum class EdgeState { KEEP, CUT };
+
+  void assignmentCallback(const std_msgs::UInt32MultiArray::ConstPtr& message) {
+    const bool versioned = message->data.size() == kUavCount + 1;
+    if (!versioned && message->data.size() != kUavCount) {
+      ROS_ERROR_STREAM("[6UAV_CRITERION] Reject assignment with size "
+                       << message->data.size());
+      return;
+    }
+    const uint32_t generation = versioned ? message->data[0] : 0;
+    if ((versioned && generation <= assignment_generation_) ||
+        (!versioned && assignment_received_))
+      return;
+    const std::size_t offset = versioned ? 1 : 0;
+    std::array<int, kUavCount> slot_to_drone{};
+    std::array<bool, kUavCount> seen{{false, false, false, false, false, false}};
+    for (std::size_t drone = 0; drone < kUavCount; ++drone) {
+      const std::size_t slot = message->data[drone + offset];
+      if (slot >= kUavCount || seen[slot]) {
+        ROS_ERROR("[6UAV_CRITERION] Reject non-permutation assignment");
+        return;
+      }
+      seen[slot] = true;
+      slot_to_drone[slot] = static_cast<int>(drone);
+    }
+    for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
+      gEdges[edge][0] = slot_to_drone[kSlotEdges[edge][0]];
+      gEdges[edge][1] = slot_to_drone[kSlotEdges[edge][1]];
+    }
+    // edge_states_ is indexed by slot edge, just like kSlotEdges.  Keep the
+    // hysteresis state across a physical-drone reassignment; resetting every
+    // edge to KEEP publishes a transient INTACT result during an active split.
+    pending_distances_.fill(0.0);
+    pending_seen_.fill(false);
+    rear_forced_cut_until_.fill(ros::Time());
+    assignment_generation_ = generation;
+    assignment_received_ = true;
+    ROS_WARN_STREAM("[6UAV_CRITERION] generation=" << generation
+                    << " slot topology mapped to physical edges: "
+                    << edgeName(0) << "," << edgeName(1) << ","
+                    << edgeName(2) << "," << edgeName(3) << ","
+                    << edgeName(4) << "," << edgeName(5) << ","
+                    << edgeName(6));
+  }
 
   void loadParameters() {
     private_nh_.param<std::string>("odom_topic_suffix", odom_suffix_,
@@ -117,6 +168,12 @@ class SixUavShadow {
     private_nh_.param("split_threshold", split_threshold_, 0.34);
     private_nh_.param("hard_split_threshold", hard_split_threshold_, 0.20);
     private_nh_.param("merge_threshold", merge_threshold_, 0.70);
+    private_nh_.param("distance_split_threshold",
+                      distance_split_threshold_, 1.80);
+    private_nh_.param("hard_distance_split_threshold",
+                      hard_distance_split_threshold_, 2.50);
+    private_nh_.param("distance_merge_threshold",
+                      distance_merge_threshold_, 1.70);
     private_nh_.param("persistence_distance", persistence_distance_, 0.05);
     private_nh_.param("rear_split_propagation_enabled",
                       rear_split_propagation_enabled_, true);
@@ -143,6 +200,10 @@ class SixUavShadow {
         merge_threshold_ <= split_threshold_ || merge_threshold_ > 1.0 ||
         hard_split_threshold_ < 0.0 ||
         hard_split_threshold_ > split_threshold_ ||
+        distance_merge_threshold_ <= 0.0 ||
+        distance_merge_threshold_ >= distance_split_threshold_ ||
+        distance_split_threshold_ <= 0.0 ||
+        hard_distance_split_threshold_ < distance_split_threshold_ ||
         persistence_distance_ < 0.0 ||
         rear_split_propagation_factor_ <= 0.0 ||
         rear_split_propagation_speed_ <= 0.0 ||
@@ -272,7 +333,7 @@ class SixUavShadow {
           }
           for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
             intersections[edge] += static_cast<std::size_t>(
-                inside[kEdges[edge][0]] && inside[kEdges[edge][1]]);
+                inside[gEdges[edge][0]] && inside[gEdges[edge][1]]);
           }
         }
       }
@@ -281,13 +342,13 @@ class SixUavShadow {
     std::array<double, kEdgeCount> scores{};
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
       const std::size_t smaller =
-          std::min(volumes[kEdges[edge][0]], volumes[kEdges[edge][1]]);
+          std::min(volumes[gEdges[edge][0]], volumes[gEdges[edge][1]]);
       (*overlaps)[edge] =
           smaller ? static_cast<double>(intersections[edge]) /
                         static_cast<double>(smaller)
                   : 0.0;
       (*visibility_weights)[edge] = visibilityWeight(
-          positions_[kEdges[edge][0]], positions_[kEdges[edge][1]],
+          positions_[gEdges[edge][0]], positions_[gEdges[edge][1]],
           &(*clearances)[edge]);
       scores[edge] = (*overlaps)[edge] * (*visibility_weights)[edge];
     }
@@ -326,16 +387,16 @@ class SixUavShadow {
   double edgeMidpointDistance(std::size_t first_edge,
                               std::size_t second_edge) const {
     const Vec3 first_midpoint{
-        0.5 * (positions_[kEdges[first_edge][0]].x +
-               positions_[kEdges[first_edge][1]].x),
-        0.5 * (positions_[kEdges[first_edge][0]].y +
-               positions_[kEdges[first_edge][1]].y),
+        0.5 * (positions_[gEdges[first_edge][0]].x +
+               positions_[gEdges[first_edge][1]].x),
+        0.5 * (positions_[gEdges[first_edge][0]].y +
+               positions_[gEdges[first_edge][1]].y),
         0.0};
     const Vec3 second_midpoint{
-        0.5 * (positions_[kEdges[second_edge][0]].x +
-               positions_[kEdges[second_edge][1]].x),
-        0.5 * (positions_[kEdges[second_edge][0]].y +
-               positions_[kEdges[second_edge][1]].y),
+        0.5 * (positions_[gEdges[second_edge][0]].x +
+               positions_[gEdges[second_edge][1]].x),
+        0.5 * (positions_[gEdges[second_edge][0]].y +
+               positions_[gEdges[second_edge][1]].y),
         0.0};
     return planarDistance(first_midpoint, second_midpoint);
   }
@@ -358,10 +419,10 @@ class SixUavShadow {
     edge_states_[rear_edge] = EdgeState::CUT;
     resetPending(rear_edge);
     ROS_WARN_STREAM("[6UAV_SPLIT_PROPAGATION] Front edge "
-                    << kEdges[front_edge][0] << "-"
-                    << kEdges[front_edge][1] << " cut; force rear edge "
-                    << kEdges[rear_edge][0] << "-"
-                    << kEdges[rear_edge][1] << " cut for " << duration
+                    << gEdges[front_edge][0] << "-"
+                    << gEdges[front_edge][1] << " cut; force rear edge "
+                    << gEdges[rear_edge][0] << "-"
+                    << gEdges[rear_edge][1] << " cut for " << duration
                     << " s.");
   }
 
@@ -373,6 +434,8 @@ class SixUavShadow {
         edge_states_[0] == EdgeState::KEEP,
         edge_states_[1] == EdgeState::KEEP}};
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
+      const double edge_distance = planarDistance(
+          positions_[gEdges[edge][0]], positions_[gEdges[edge][1]]);
       if ((edge == 2 || edge == 3) && rearForcedCutActive(edge, now)) {
         edge_states_[edge] = EdgeState::CUT;
         resetPending(edge);
@@ -380,14 +443,17 @@ class SixUavShadow {
       }
       if (edge_states_[edge] == EdgeState::KEEP &&
           (scores[edge] <= hard_split_threshold_ ||
-           clearances[edge] <= 0.0)) {
+           clearances[edge] <= 0.0 ||
+           edge_distance >= hard_distance_split_threshold_)) {
         edge_states_[edge] = EdgeState::CUT;
         resetPending(edge);
         continue;
       }
       const bool candidate = edge_states_[edge] == EdgeState::KEEP
-                                 ? scores[edge] <= split_threshold_
-                                 : scores[edge] >= merge_threshold_;
+                                 ? (scores[edge] <= split_threshold_ ||
+                                    edge_distance >= distance_split_threshold_)
+                                 : (scores[edge] >= merge_threshold_ &&
+                                    edge_distance <= distance_merge_threshold_);
       if (!candidate) {
         resetPending(edge);
         continue;
@@ -431,7 +497,7 @@ class SixUavShadow {
     };
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
       if (edge_states_[edge] == EdgeState::KEEP)
-        unite(kEdges[edge][0], kEdges[edge][1]);
+        unite(gEdges[edge][0], gEdges[edge][1]);
     }
     std::vector<std::vector<int>> components;
     std::array<int, kUavCount> component_index{{-1, -1, -1, -1, -1, -1}};
@@ -480,77 +546,26 @@ class SixUavShadow {
     visualization_msgs::Marker clear;
     clear.action = visualization_msgs::Marker::DELETEALL;
     output.markers.push_back(clear);
-    int marker_id = 1;
-    for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
-      visualization_msgs::Marker line;
-      line.header.frame_id = frame_id_;
-      line.header.stamp = ros::Time::now();
-      line.ns = "six_uav_criterion_edges";
-      line.id = marker_id++;
-      line.type = visualization_msgs::Marker::LINE_LIST;
-      line.action = visualization_msgs::Marker::ADD;
-      line.scale.x = 0.06;
-      line.color.a = 1.0;
-      const bool cut = edge_states_[edge] == EdgeState::CUT;
-      line.color.r = cut ? 1.0 : 0.1;
-      line.color.g = cut ? 0.05 : 0.9;
-      if (!cut) {
-        line.points.push_back(pointMessage(positions_[kEdges[edge][0]]));
-        line.points.push_back(pointMessage(positions_[kEdges[edge][1]]));
-        output.markers.push_back(line);
-      }
-      visualization_msgs::Marker label;
-      label.header = line.header;
-      label.ns = "six_uav_criterion_scores";
-      label.id = marker_id++;
-      label.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
-      label.action = visualization_msgs::Marker::ADD;
-      label.scale.z = 0.18;
-      label.color = line.color;
-      label.pose.orientation.w = 1.0;
-      label.pose.position.x = 0.5 * (positions_[kEdges[edge][0]].x +
-                                     positions_[kEdges[edge][1]].x);
-      label.pose.position.y = 0.5 * (positions_[kEdges[edge][0]].y +
-                                     positions_[kEdges[edge][1]].y);
-      label.pose.position.z = 0.5 * (positions_[kEdges[edge][0]].z +
-                                     positions_[kEdges[edge][1]].z) + 0.22;
-      std::ostringstream text;
-      if (cut && (edge == 2 || edge == 3) &&
-          rearForcedCutActive(edge, ros::Time::now())) {
-        text << "PROP_CUT ";
-      } else if (cut) {
-        text << "CUT ";
-      }
-      text << kEdges[edge][0] << "-" << kEdges[edge][1] << " S="
-           << std::fixed << std::setprecision(2) << scores[edge];
-      label.text = text.str();
-      output.markers.push_back(label);
-    }
     visualization_msgs::Marker label;
     label.header.frame_id = frame_id_;
     label.header.stamp = ros::Time::now();
     label.ns = "six_uav_criterion_state";
-    label.id = marker_id;
+    label.id = 1;
     label.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
     label.action = visualization_msgs::Marker::ADD;
     label.pose.orientation.w = 1.0;
     const Vec3 center = formationCenter();
-    label.pose.position = pointMessage({center.x, center.y, center.z + 0.8});
-    label.scale.z = 0.32;
+    label.pose.position = pointMessage({center.x, center.y, center.z + 1.30});
+    label.scale.z = 0.26;
     label.color.a = 1.0;
     label.color.r = state == "SPLIT" ? 1.0 : 0.1;
     label.color.g = state == "SPLIT" ? 0.1 : 0.9;
-    label.text = "6UAV CRITERION " + state + " components=" + components;
-    const ros::Time now = ros::Time::now();
-    const double rear_34_remaining = rearForcedRemaining(2, now);
-    const double rear_45_remaining = rearForcedRemaining(3, now);
-    if (rear_34_remaining > 0.0 || rear_45_remaining > 0.0) {
-      std::ostringstream propagation;
-      propagation << "\nFRONT->REAR 01->34=" << std::fixed
-                  << std::setprecision(1) << rear_34_remaining
-                  << "s 12->45=" << rear_45_remaining << "s";
-      label.text += propagation.str();
-    }
+    std::ostringstream text;
+    text << "CRITERION " << state << "  minS=" << std::fixed
+         << std::setprecision(2)
+         << *std::min_element(scores.begin(), scores.end()) << "  "
+         << components;
+    label.text = text.str();
     output.markers.push_back(label);
     marker_pub_.publish(output);
   }
@@ -575,12 +590,13 @@ class SixUavShadow {
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
       max_edge_distance = std::max(
           max_edge_distance,
-          planarDistance(positions_[kEdges[edge][0]], positions_[kEdges[edge][1]]));
+          planarDistance(positions_[gEdges[edge][0]], positions_[gEdges[edge][1]]));
     }
     const Vec3 center = formationCenter();
     std::ostringstream summary;
     summary << std::fixed << std::setprecision(4)
-            << "{\"state\":\"" << state << "\",\"components\":\""
+            << "{\"assignment_generation\":" << assignment_generation_
+            << ",\"state\":\"" << state << "\",\"components\":\""
             << components << "\",\"center_x\":" << center.x
             << ",\"center_y\":" << center.y
             << ",\"cut_score\":"
@@ -595,8 +611,8 @@ class SixUavShadow {
               << ",\"visibility_weight_" << name << "\":"
               << visibility[edge]
               << ",\"distance_" << name << "\":"
-              << planarDistance(positions_[kEdges[edge][0]],
-                                positions_[kEdges[edge][1]])
+              << planarDistance(positions_[gEdges[edge][0]],
+                                positions_[gEdges[edge][1]])
               << ",\"pending_distance_" << name << "\":"
               << pending_distances_[edge];
     }
@@ -656,6 +672,7 @@ class SixUavShadow {
   ros::NodeHandle private_nh_;
   std::array<ros::Subscriber, kUavCount> odom_subscribers_;
   ros::Subscriber obstacle_cloud_subscriber_;
+  ros::Subscriber assignment_subscriber_;
   ros::Publisher state_pub_;
   ros::Publisher score_pub_;
   ros::Publisher merge_score_pub_;
@@ -687,6 +704,9 @@ class SixUavShadow {
   double split_threshold_{0.34};
   double hard_split_threshold_{0.20};
   double merge_threshold_{0.70};
+  double distance_split_threshold_{1.80};
+  double hard_distance_split_threshold_{2.50};
+  double distance_merge_threshold_{1.70};
   double persistence_distance_{0.05};
   bool rear_split_propagation_enabled_{true};
   double rear_split_propagation_factor_{1.3};
@@ -696,6 +716,8 @@ class SixUavShadow {
   std::array<ros::Time, kEdgeCount> rear_forced_cut_until_{};
   bool map_seen_{false};
   bool last_safety_violation_{false};
+  uint32_t assignment_generation_{0};
+  bool assignment_received_{false};
   std::unique_ptr<VoxelObstacleField> obstacle_field_;
   std::unique_ptr<VoxelObstacleField> narrow_obstacle_field_;
 };

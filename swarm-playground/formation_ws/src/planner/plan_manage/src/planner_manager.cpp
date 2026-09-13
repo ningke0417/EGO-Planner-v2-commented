@@ -6,6 +6,12 @@
 
 namespace ego_planner
 {
+  bool EGOPlannerManager::setFormationAssignment(
+      const std::vector<int> &assignment)
+  {
+    return ploy_traj_opt_->setFormationAssignment(assignment);
+  }
+
   void EGOPlannerManager::setManualFormationSplit(const bool enabled)
   {
     ploy_traj_opt_->setManualFormationSplit(enabled);
@@ -24,6 +30,12 @@ namespace ego_planner
   void EGOPlannerManager::setSplitProgressSyncWeightScale(const double scale)
   {
     ploy_traj_opt_->setSplitProgressSyncWeightScale(scale);
+  }
+
+  void EGOPlannerManager::beginMergeSynchronization(
+      const Eigen::Vector3d &position)
+  {
+    ploy_traj_opt_->beginMergeSynchronization(position);
   }
 
   void EGOPlannerManager::setSubgroupRouteIntent(
@@ -553,7 +565,8 @@ namespace ego_planner
   bool EGOPlannerManager::planGlobalTrajWaypoints(
       const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel,
       const Eigen::Vector3d &start_acc, const std::vector<Eigen::Vector3d> &waypoints,
-      const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc)
+      const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc,
+      const bool reset_local_trajectory)
   {
 
     poly_traj::MinJerkOpt globalMJO;
@@ -614,7 +627,8 @@ namespace ego_planner
     }
 
     auto time_now = ros::Time::now();
-    traj_.setGlobalTraj(globalMJO.getTraj(), time_now.toSec());
+    traj_.setGlobalTraj(globalMJO.getTraj(), time_now.toSec(),
+                        reset_local_trajectory);
 
     return true;
   }

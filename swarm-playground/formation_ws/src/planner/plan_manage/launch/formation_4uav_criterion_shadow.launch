@@ -72,8 +72,21 @@
     <arg name="subgroup_route_intent_corridor_half_width" default="0.25"/>
     <arg name="subgroup_route_intent_show_debug_text" default="false"/>
     <arg name="formation_weight" default="200"/>
+    <arg name="initial_assignment_enabled" default="false"/>
     <arg name="use_wall_collision_guard" default="$(eval arg('map_shape') == 'wall')"/>
     <arg name="wall_guard_check_horizon" default="3.0"/>
+
+    <node if="$(arg initial_assignment_enabled)"
+          pkg="ego_planner" type="initial_formation_assignment_4uav_node"
+          name="initial_formation_assignment_4uav" output="screen" required="true">
+        <param name="odom_topic_suffix" value="$(arg odom_topic)"/>
+        <param name="settle_duration" value="0.5" type="double"/>
+        <rosparam subst_value="true" param="formation_start">[$(arg start_x), 0.0, 1.5]</rosparam>
+        <rosparam param="formation_slot0">[0.5, -0.5, 0.0]</rosparam>
+        <rosparam param="formation_slot1">[0.5, 0.5, 0.0]</rosparam>
+        <rosparam param="formation_slot2">[-0.5, -0.5, 0.0]</rosparam>
+        <rosparam param="formation_slot3">[-0.5, 0.5, 0.0]</rosparam>
+    </node>
 
     <include file="$(find swarm_bridge)/launch/bridge_udp.launch">
         <arg name="drone_id" value="999"/>
@@ -221,6 +234,7 @@
          front row {0,1}, rear row {2,3}. -->
     <include file="$(find ego_planner)/launch/run_in_sim.launch">
         <arg name="drone_id" value="0"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
         <arg name="init_x" value="$(eval float(arg('start_x')) + 0.5)"/>
         <arg name="init_y" value="-0.5"/>
         <arg name="init_z" value="1.5"/>
@@ -270,6 +284,7 @@
 
     <include file="$(find ego_planner)/launch/run_in_sim.launch">
         <arg name="drone_id" value="1"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
         <arg name="init_x" value="$(eval float(arg('start_x')) + 0.5)"/>
         <arg name="init_y" value="0.5"/>
         <arg name="init_z" value="1.5"/>
@@ -319,6 +334,7 @@
 
     <include file="$(find ego_planner)/launch/run_in_sim.launch">
         <arg name="drone_id" value="2"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
         <arg name="init_x" value="$(eval float(arg('start_x')) - 0.5)"/>
         <arg name="init_y" value="-0.5"/>
         <arg name="init_z" value="1.5"/>
@@ -368,6 +384,7 @@
 
     <include file="$(find ego_planner)/launch/run_in_sim.launch">
         <arg name="drone_id" value="3"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
         <arg name="init_x" value="$(eval float(arg('start_x')) - 0.5)"/>
         <arg name="init_y" value="0.5"/>
         <arg name="init_z" value="1.5"/>
