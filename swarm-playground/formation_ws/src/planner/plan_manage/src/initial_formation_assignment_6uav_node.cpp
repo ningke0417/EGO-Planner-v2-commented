@@ -15,13 +15,19 @@
 namespace
 {
 
-constexpr int kUavCount = 6;
+#ifndef FORMATION_UAV_COUNT
+#define FORMATION_UAV_COUNT 6
+#endif
+
+constexpr int kUavCount = FORMATION_UAV_COUNT;
 
 class InitialFormationAssignment
 {
 public:
   InitialFormationAssignment() : private_nh_("~")
   {
+    for (int id = 0; id < kUavCount; ++id)
+      current_assignment_[id] = id;
     private_nh_.param<std::string>("odom_topic_suffix", odom_suffix_,
                                    "visual_slam/odom");
     private_nh_.param("settle_duration", settle_duration_, 0.5);
@@ -323,7 +329,7 @@ private:
   std::array<Eigen::Vector3d, kUavCount> velocities_;
   std::array<Eigen::Vector3d, kUavCount> slot_positions_;
   std::array<ros::Time, kUavCount> odom_stamps_;
-  std::array<bool, kUavCount> odom_seen_{{false, false, false, false, false, false}};
+  std::array<bool, kUavCount> odom_seen_{};
   Eigen::Vector3d formation_start_{Eigen::Vector3d::Zero()};
   ros::Time first_all_seen_stamp_;
   std::string odom_suffix_;
@@ -334,7 +340,7 @@ private:
   double prediction_horizon_{0.75};
   double switch_penalty_{0.25};
   double minimum_improvement_ratio_{0.15};
-  std::array<int, kUavCount> current_assignment_{{0, 1, 2, 3, 4, 5}};
+  std::array<int, kUavCount> current_assignment_{};
   Eigen::VectorXi last_candidate_;
   ros::Time last_evaluation_stamp_;
   uint32_t assignment_generation_{0};

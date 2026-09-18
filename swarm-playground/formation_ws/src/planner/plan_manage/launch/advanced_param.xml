@@ -80,6 +80,8 @@
     <arg name="formation_drone5_y" default="-0.5"/>
     <arg name="formation_drone6_x" default="-1.0"/>
     <arg name="formation_drone6_y" default="0.5"/>
+    <arg name="formation_drone7_x" default="-1.0"/>
+    <arg name="formation_drone7_y" default="1.5"/>
     <!-- main node -->
     <!-- <node pkg="ego_planner" name="ego_planner_node" type="ego_planner_node" output="screen" launch-prefix="valgrind"> -->
     <node pkg="ego_planner" name="drone_$(arg drone_id)_ego_planner_node" type="ego_planner_node" output="screen">
@@ -219,5 +221,6 @@
         <rosparam subst_value="true" param="formation/drone4">[$(arg formation_drone4_x), $(arg formation_drone4_y), 0]</rosparam>
         <rosparam subst_value="true" param="formation/drone5">[$(arg formation_drone5_x), $(arg formation_drone5_y), 0]</rosparam>
         <rosparam subst_value="true" param="formation/drone6">[$(arg formation_drone6_x), $(arg formation_drone6_y), 0]</rosparam>
+        <rosparam subst_value="true" param="formation/drone7">[$(arg formation_drone7_x), $(arg formation_drone7_y), 0]</rosparam>
     </node>
 </launch>

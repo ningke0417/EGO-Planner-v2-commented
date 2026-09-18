@@ -16,13 +16,26 @@
 
 namespace {
 
-constexpr std::size_t kUavCount = 6;
+#ifndef FORMATION_UAV_COUNT
+#define FORMATION_UAV_COUNT 6
+#endif
+
+constexpr std::size_t kUavCount = FORMATION_UAV_COUNT;
+#if FORMATION_UAV_COUNT == 8
+constexpr std::size_t kEdgeCount = 10;
+const std::array<std::array<int, 2>, kEdgeCount> kSlotEdges{{
+    {{0, 1}}, {{1, 2}}, {{2, 3}}, {{4, 5}}, {{5, 6}}, {{6, 7}},
+    {{0, 4}}, {{1, 5}}, {{2, 6}}, {{3, 7}}}};
+const char kAllUavComponent[] = "{0,1,2,3,4,5,6,7}";
+#else
 constexpr std::size_t kEdgeCount = 7;
 const std::array<std::array<int, 2>, kEdgeCount> kSlotEdges{{
     {{0, 1}}, {{1, 2}}, {{3, 4}}, {{4, 5}},
     {{0, 3}}, {{1, 4}}, {{2, 5}}}};
-std::array<std::array<int, 2>, kEdgeCount> gEdges = kSlotEdges;
 const char kAllUavComponent[] = "{0,1,2,3,4,5}";
+#endif
+std::array<std::array<int, 2>, kEdgeCount> gEdges = kSlotEdges;
+constexpr uint32_t kAllEdgesMask = (uint32_t{1} << kEdgeCount) - 1u;
 
 class SixUavAutoSplitBridge {
  public:
@@ -106,7 +119,7 @@ class SixUavAutoSplitBridge {
                              &SixUavAutoSplitBridge::timerCallback, this);
     next_epoch_ = ros::Time::now().toNSec();
     issueCommand(ego_planner::FormationTopologyCommand::INTACT, "INTACT",
-                 "SIX_UAV_BRIDGE_STARTUP");
+                 "SIX_UAV_BRIDGE_STARTUP", kAllEdgesMask);
     publishStatus("6UAV AUTO_SPLIT ARMED");
     ROS_INFO_STREAM("[6UAV_AUTO_SPLIT] Armed. split_scale="
                     << split_formation_weight_scale_
@@ -143,7 +156,7 @@ class SixUavAutoSplitBridge {
       return;
     const std::size_t offset = versioned ? 1 : 0;
     std::array<int, kUavCount> slot_to_drone{};
-    std::array<bool, kUavCount> seen{{false, false, false, false, false, false}};
+    std::array<bool, kUavCount> seen{};
     for (std::size_t drone = 0; drone < kUavCount; ++drone) {
       const std::size_t slot = message->data[drone + offset];
       if (slot >= kUavCount || seen[slot]) {
@@ -163,15 +176,14 @@ class SixUavAutoSplitBridge {
     assignment_generation_ = generation;
     assignment_received_ = true;
     assignment_acknowledgements_.fill(false);
+    std::ostringstream mapped_edges;
+    for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
+      if (edge) mapped_edges << ",";
+      mapped_edges << gEdges[edge][0] << gEdges[edge][1];
+    }
     ROS_WARN_STREAM("[6UAV_AUTO_SPLIT] assignment generation=" << generation
                     << " mapped slot topology to physical edges: "
-                    << gEdges[0][0] << gEdges[0][1] << ","
-                    << gEdges[1][0] << gEdges[1][1] << ","
-                    << gEdges[2][0] << gEdges[2][1] << ","
-                    << gEdges[3][0] << gEdges[3][1] << ","
-                    << gEdges[4][0] << gEdges[4][1] << ","
-                    << gEdges[5][0] << gEdges[5][1] << ","
-                    << gEdges[6][0] << gEdges[6][1]);
+                    << mapped_edges.str());
   }
 
   void assignmentAckCallback(
@@ -221,7 +233,7 @@ class SixUavAutoSplitBridge {
   bool parseComponents(const std::string& text,
                        std::string* canonical) const {
     if (text.empty() || text == "INTACT") return false;
-    std::array<bool, kUavCount> seen{{false, false, false, false, false, false}};
+    std::array<bool, kUavCount> seen{};
     std::vector<std::vector<int>> groups;
     std::size_t cursor = 0;
     while (cursor < text.size()) {
@@ -311,7 +323,9 @@ class SixUavAutoSplitBridge {
 
   std::string componentsFromEdges(
       const std::array<bool, kEdgeCount>& connected) const {
-    std::array<int, kUavCount> parent{{0, 1, 2, 3, 4, 5}};
+    std::array<int, kUavCount> parent{};
+    for (std::size_t id = 0; id < kUavCount; ++id)
+      parent[id] = static_cast<int>(id);
     const auto find_root = [&parent](int value) {
       int root = value;
       while (parent[root] != root) root = parent[root];
@@ -329,7 +343,8 @@ class SixUavAutoSplitBridge {
       if (first_root != second_root) parent[second_root] = first_root;
     }
     std::vector<std::vector<int>> components;
-    std::array<int, kUavCount> component_index{{-1, -1, -1, -1, -1, -1}};
+    std::array<int, kUavCount> component_index{};
+    component_index.fill(-1);
     for (int id = 0; id < static_cast<int>(kUavCount); ++id) {
       const int root = find_root(id);
       if (component_index[root] < 0) {
@@ -394,6 +409,8 @@ class SixUavAutoSplitBridge {
     const std::string state = extractString(message->data, "state");
     const std::string components = extractString(message->data, "components");
     double generation_value = 0.0;
+    double edge_count_value = 0.0;
+    double edge_keep_mask_value = 0.0;
     double center_x = 0.0;
     double max_edge_distance = 0.0;
     if (state.empty() ||
@@ -404,6 +421,13 @@ class SixUavAutoSplitBridge {
             static_cast<double>(std::numeric_limits<uint32_t>::max()) ||
         generation_value != std::floor(generation_value) ||
         !extractNumber(message->data, "center_x", &center_x) ||
+        !extractNumber(message->data, "edge_count", &edge_count_value) ||
+        edge_count_value != static_cast<double>(kEdgeCount) ||
+        !extractNumber(message->data, "edge_keep_mask",
+                       &edge_keep_mask_value) ||
+        edge_keep_mask_value < 0.0 ||
+        edge_keep_mask_value > static_cast<double>(kAllEdgesMask) ||
+        edge_keep_mask_value != std::floor(edge_keep_mask_value) ||
         !extractNumber(message->data, "max_edge_distance",
                        &max_edge_distance)) {
       ROS_WARN_THROTTLE(2.0, "[6UAV_AUTO_SPLIT] Invalid criterion summary.");
@@ -419,7 +443,11 @@ class SixUavAutoSplitBridge {
       return;
     }
     std::string canonical = "INTACT";
-    if (state == "SPLIT" && !parseComponents(components, &canonical)) {
+    const bool valid_partial_component =
+        state == "PARTIAL_CUT" && components == kAllUavComponent;
+    if (valid_partial_component) canonical = kAllUavComponent;
+    if ((state == "SPLIT" || state == "PARTIAL_CUT") &&
+        !valid_partial_component && !parseComponents(components, &canonical)) {
       ROS_WARN_THROTTLE(2.0,
                         "[6UAV_AUTO_SPLIT] Invalid split components: %s",
                         components.c_str());
@@ -427,6 +455,7 @@ class SixUavAutoSplitBridge {
     }
     criterion_state_ = state;
     criterion_components_ = canonical;
+    criterion_edge_keep_mask_ = static_cast<uint32_t>(edge_keep_mask_value);
     center_x_ = center_x;
     max_edge_distance_ = max_edge_distance;
     criterion_edge_metrics_valid_ = true;
@@ -454,6 +483,8 @@ class SixUavAutoSplitBridge {
         message->drone_id >= kUavCount ||
         message->mode != active_command_.mode ||
         message->components != active_command_.components ||
+        message->edge_count != active_command_.edge_count ||
+        message->edge_keep_mask != active_command_.edge_keep_mask ||
         std::fabs(message->formation_scale -
                   active_command_.formation_scale) > 1e-6 ||
         std::fabs(message->progress_sync_scale -
@@ -480,7 +511,7 @@ class SixUavAutoSplitBridge {
   }
 
   void issueCommand(uint8_t mode, const std::string& components,
-                    const std::string& reason,
+                    const std::string& reason, uint32_t edge_keep_mask,
                     double formation_scale = -1.0) {
     if (mode == ego_planner::FormationTopologyCommand::SPLIT &&
         reason == "CRITERION_SPLIT" &&
@@ -491,6 +522,11 @@ class SixUavAutoSplitBridge {
     active_command_.epoch = ++next_epoch_;
     active_command_.mode = mode;
     active_command_.components = components;
+    active_command_.edge_count = kEdgeCount;
+    active_command_.edge_keep_mask =
+        mode == ego_planner::FormationTopologyCommand::INTACT
+            ? kAllEdgesMask
+            : (edge_keep_mask & kAllEdgesMask);
     active_command_.formation_scale =
         mode == ego_planner::FormationTopologyCommand::SPLIT
             ? (formation_scale >= 0.0 ? formation_scale
@@ -515,20 +551,27 @@ class SixUavAutoSplitBridge {
                    ? "SPLIT"
                    : "INTACT")
            << " epoch=" << active_command_.epoch
-           << " components=" << components << " reason=" << reason;
+           << " components=" << components
+           << " edge_keep_mask=" << active_command_.edge_keep_mask
+           << " reason=" << reason;
     publishStatus(status.str());
     ROS_WARN_STREAM("[6UAV_AUTO_SPLIT] " << status.str());
   }
 
-  void updateCandidate(const std::string& components, const ros::Time& now) {
-    if (candidate_components_ == components && !candidate_since_.isZero())
+  void updateCandidate(const std::string& components, uint32_t edge_keep_mask,
+                       const ros::Time& now) {
+    if (candidate_components_ == components &&
+        candidate_edge_keep_mask_ == edge_keep_mask &&
+        !candidate_since_.isZero())
       return;
     candidate_components_ = components;
+    candidate_edge_keep_mask_ = edge_keep_mask;
     candidate_since_ = now;
   }
 
   void clearCandidate() {
     candidate_components_.clear();
+    candidate_edge_keep_mask_ = kAllEdgesMask;
     candidate_since_ = ros::Time(0);
   }
 
@@ -584,7 +627,7 @@ class SixUavAutoSplitBridge {
                                      : components;
     weak_recovery_source_components_.clear();
     issueCommand(ego_planner::FormationTopologyCommand::SPLIT,
-                 fallback, reason);
+                 fallback, reason, criterion_edge_keep_mask_);
   }
 
   bool handleWeakRecovery(const ros::Time& now) {
@@ -643,7 +686,7 @@ class SixUavAutoSplitBridge {
     weak_recovery_ramp_since_ = ros::Time(0);
     weak_recovery_source_components_.clear();
     issueCommand(ego_planner::FormationTopologyCommand::INTACT, "INTACT",
-                 "VISIBILITY_MERGED_AFTER_WEAK_RECOVERY");
+                 "VISIBILITY_MERGED_AFTER_WEAK_RECOVERY", kAllEdgesMask);
     return true;
   }
 
@@ -680,6 +723,7 @@ class SixUavAutoSplitBridge {
     awaiting_merge_assignment_ = !reassignment_completed_for_split_cycle_;
     issueCommand(ego_planner::FormationTopologyCommand::SPLIT,
                  kAllUavComponent, "VISIBILITY_WEAK_RECONNECT",
+                 kAllEdgesMask,
                  weak_reconnect_formation_weight_scale_);
     publishStatus("6UAV WEAK_RECOVERY COMMAND_SENT");
     ROS_WARN_STREAM(
@@ -706,7 +750,7 @@ class SixUavAutoSplitBridge {
     if (merge_ready_since_.isZero()) merge_ready_since_ = now;
     if ((now - merge_ready_since_).toSec() >= merge_ready_persistence_) {
       issueCommand(ego_planner::FormationTopologyCommand::INTACT, "INTACT",
-                   "CRITERION_MERGED_AFTER_WALL");
+                   "CRITERION_MERGED_AFTER_WALL", kAllEdgesMask);
     }
   }
 
@@ -730,33 +774,38 @@ class SixUavAutoSplitBridge {
 
     if (backend_split && maybeStartWeakRecovery(now)) return;
 
-    if (criterion_state_ == "SPLIT") {
+    if (criterion_state_ == "SPLIT" || criterion_state_ == "PARTIAL_CUT") {
       merge_ready_since_ = ros::Time(0);
-      const std::string desired_components =
-          backend_split
-              ? topologyWithSecondaryCutGuard(criterion_components_)
-              : criterion_components_;
+      // The criterion summary is now the single source of truth for both the
+      // component labels and the per-edge KEEP/CUT mask.  Applying the former
+      // secondary-cut guard here could preserve a component edge while still
+      // forwarding that edge as CUT, leaving route grouping, visualization,
+      // and optimizer constraints with different topologies.
+      const std::string& desired_components = criterion_components_;
       // A one-component SPLIT command is the weak-recovery mode.  Do not let
       // ordinary component tracking enter it without the explicit visibility,
       // distance, wall and persistence gates above.
       if (weak_reconnect_enabled_ && backend_split &&
-          desired_components == kAllUavComponent) {
+          desired_components == kAllUavComponent &&
+          criterion_edge_keep_mask_ == kAllEdgesMask) {
         clearCandidate();
         publishStatus("6UAV WEAK_RECOVERY WAIT_SAFE_GATE");
         return;
       }
-      if (backend_split && desired_components == active_command_.components) {
+      if (backend_split && desired_components == active_command_.components &&
+          criterion_edge_keep_mask_ == active_command_.edge_keep_mask) {
         clearCandidate();
         return;
       }
-      updateCandidate(desired_components, now);
+      updateCandidate(desired_components, criterion_edge_keep_mask_, now);
       const double required = backend_split ? topology_change_persistence_
                                             : split_ready_persistence_;
       if ((now - candidate_since_).toSec() >= required) {
         issueCommand(ego_planner::FormationTopologyCommand::SPLIT,
                      desired_components,
                      backend_split ? "CRITERION_TOPOLOGY_CHANGED"
-                                   : "CRITERION_SPLIT");
+                                   : "CRITERION_SPLIT",
+                     criterion_edge_keep_mask_);
       }
       return;
     }
@@ -809,6 +858,8 @@ class SixUavAutoSplitBridge {
   std::string criterion_state_;
   std::string criterion_components_{"INTACT"};
   std::string candidate_components_;
+  uint32_t criterion_edge_keep_mask_{kAllEdgesMask};
+  uint32_t candidate_edge_keep_mask_{kAllEdgesMask};
   std::string last_status_;
   double center_x_{0.0};
   double max_edge_distance_{0.0};
@@ -833,8 +884,7 @@ class SixUavAutoSplitBridge {
   double ack_timeout_{2.0};
   uint64_t next_epoch_{0};
   ego_planner::FormationTopologyCommand active_command_;
-  std::array<bool, kUavCount> acknowledgements_{{false, false, false,
-                                                 false, false, false}};
+  std::array<bool, kUavCount> acknowledgements_{};
   ros::Time criterion_stamp_;
   ros::Time candidate_since_;
   ros::Time merge_ready_since_;
@@ -850,8 +900,7 @@ class SixUavAutoSplitBridge {
   uint32_t criterion_assignment_generation_{0};
   uint32_t assignment_generation_{0};
   uint32_t minimum_merge_assignment_generation_{0};
-  std::array<bool, kUavCount> assignment_acknowledgements_{{
-      false, false, false, false, false, false}};
+  std::array<bool, kUavCount> assignment_acknowledgements_{};
   bool assignment_received_{false};
   bool awaiting_merge_assignment_{false};
   bool reassignment_completed_for_split_cycle_{false};

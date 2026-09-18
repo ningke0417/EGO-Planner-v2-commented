@@ -5,6 +5,8 @@ std_msgs/Header header
 uint64 epoch
 uint8 mode
 string components
+uint32 edge_count
+uint32 edge_keep_mask
 float64 formation_scale
 float64 progress_sync_scale
 string reason

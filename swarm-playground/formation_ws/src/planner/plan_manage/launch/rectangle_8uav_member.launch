@@ -1,0 +1,54 @@
+<launch>
+    <!-- One vehicle in a 2x4 rectangle.  Adjacent slot spacing is 1 m. -->
+    <arg name="drone_id"/>
+    <arg name="init_x"/>
+    <arg name="init_y"/>
+    <arg name="init_z" default="1.5"/>
+    <arg name="map_size_x"/>
+    <arg name="map_size_y"/>
+    <arg name="map_size_z"/>
+    <arg name="odom_topic" default="visual_slam/odom"/>
+    <arg name="max_vel" default="0.5"/>
+    <arg name="start_x"/>
+    <arg name="goal_x"/>
+    <arg name="safety_distance" default="0.2"/>
+    <arg name="wall_guard_check_horizon" default="3.0"/>
+    <arg name="formation_weight" default="200"/>
+    <arg name="initial_assignment_enabled" default="true"/>
+    <arg name="merge_sync_enabled" default="true"/>
+    <arg name="merge_sync_duration" default="20.0"/>
+    <arg name="merge_sync_backtrack_tolerance" default="0.03"/>
+    <arg name="merge_sync_weight" default="1000.0"/>
+
+    <include file="$(find ego_planner)/launch/formation_6uav_dynamic_wall_member.launch">
+        <arg name="drone_id" value="$(arg drone_id)"/>
+        <arg name="init_x" value="$(arg init_x)"/>
+        <arg name="init_y" value="$(arg init_y)"/>
+        <arg name="init_z" value="$(arg init_z)"/>
+        <arg name="map_size_x" value="$(arg map_size_x)"/>
+        <arg name="map_size_y" value="$(arg map_size_y)"/>
+        <arg name="map_size_z" value="$(arg map_size_z)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+        <arg name="start_x" value="$(arg start_x)"/>
+        <arg name="goal_x" value="$(arg goal_x)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
+        <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
+        <arg name="formation_weight" value="$(arg formation_weight)"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
+        <arg name="merge_sync_enabled" value="$(arg merge_sync_enabled)"/>
+        <arg name="merge_sync_duration" value="$(arg merge_sync_duration)"/>
+        <arg name="merge_sync_backtrack_tolerance" value="$(arg merge_sync_backtrack_tolerance)"/>
+        <arg name="merge_sync_weight" value="$(arg merge_sync_weight)"/>
+        <arg name="subgroup_route_intent_topic" value="/subgroup_route_intent_8uav/intents"/>
+        <arg name="formation_num" value="8"/>
+        <arg name="formation_drone0_x" value="0.5"/><arg name="formation_drone0_y" value="-1.5"/>
+        <arg name="formation_drone1_x" value="0.5"/><arg name="formation_drone1_y" value="-0.5"/>
+        <arg name="formation_drone2_x" value="0.5"/><arg name="formation_drone2_y" value="0.5"/>
+        <arg name="formation_drone3_x" value="0.5"/><arg name="formation_drone3_y" value="1.5"/>
+        <arg name="formation_drone4_x" value="-0.5"/><arg name="formation_drone4_y" value="-1.5"/>
+        <arg name="formation_drone5_x" value="-0.5"/><arg name="formation_drone5_y" value="-0.5"/>
+        <arg name="formation_drone6_x" value="-0.5"/><arg name="formation_drone6_y" value="0.5"/>
+        <arg name="formation_drone7_x" value="-0.5"/><arg name="formation_drone7_y" value="1.5"/>
+    </include>
+</launch>

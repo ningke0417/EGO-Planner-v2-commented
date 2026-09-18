@@ -33,13 +33,25 @@ using starconvex_adapter::VoxelObstacleField;
 using starconvex_adapter::norm;
 using starconvex_adapter::subtract;
 
-constexpr std::size_t kUavCount = 6;
-constexpr std::size_t kEdgeCount = 7;//只用7条最近邻边做拓扑判定
-// The existing six-UAV formation is a 2x3 grid.  Only nearest-neighbour
-// formation constraints participate in topology decisions.
+#ifndef FORMATION_UAV_COUNT
+#define FORMATION_UAV_COUNT 6
+#endif
+
+constexpr std::size_t kUavCount = FORMATION_UAV_COUNT;
+#if FORMATION_UAV_COUNT == 8
+constexpr std::size_t kEdgeCount = 10;
+constexpr std::size_t kRowEdgeCount = 3;
+const std::array<std::array<int, 2>, kEdgeCount> kSlotEdges{{
+    {{0, 1}}, {{1, 2}}, {{2, 3}}, {{4, 5}}, {{5, 6}}, {{6, 7}},
+    {{0, 4}}, {{1, 5}}, {{2, 6}}, {{3, 7}}}};
+#else
+constexpr std::size_t kEdgeCount = 7;
+constexpr std::size_t kRowEdgeCount = 2;
 const std::array<std::array<int, 2>, kEdgeCount> kSlotEdges{{
     {{0, 1}}, {{1, 2}}, {{3, 4}}, {{4, 5}},
     {{0, 3}}, {{1, 4}}, {{2, 5}}}};
+#endif
+// Only nearest-neighbour constraints participate in topology decisions.
 std::array<std::array<int, 2>, kEdgeCount> gEdges = kSlotEdges;
 
 double planarDistance(const Vec3& first, const Vec3& second) {
@@ -96,10 +108,15 @@ class SixUavShadow {
         "markers", 1, true);
     timer_ = nh_.createTimer(ros::Duration(1.0 / publish_rate_),
                              &SixUavShadow::timerCallback, this);
+    std::ostringstream configured_edges;
+    for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
+      if (edge) configured_edges << ",";
+      configured_edges << edgeName(edge);
+    }
     ROS_INFO_STREAM(
-        "Six-UAV StarConvex criterion ready: grid edges="
-        "01,12,34,45,03,14,25 split="
-        << split_threshold_ << " hard_split=" << hard_split_threshold_
+        "Formation StarConvex criterion ready: grid edges="
+        << configured_edges.str() << " split=" << split_threshold_
+        << " hard_split=" << hard_split_threshold_
         << " merge=" << merge_threshold_
         << " distance_split=" << distance_split_threshold_ << " m"
         << " distance_merge=" << distance_merge_threshold_ << " m"
@@ -149,7 +166,7 @@ class SixUavShadow {
       return;
     const std::size_t offset = versioned ? 1 : 0;
     std::array<int, kUavCount> slot_to_drone{};
-    std::array<bool, kUavCount> seen{{false, false, false, false, false, false}};
+    std::array<bool, kUavCount> seen{};
     for (std::size_t drone = 0; drone < kUavCount; ++drone) {
       const std::size_t slot = message->data[drone + offset];
       if (slot >= kUavCount || seen[slot]) {
@@ -171,12 +188,14 @@ class SixUavShadow {
     rear_forced_cut_until_.fill(ros::Time());
     assignment_generation_ = generation;
     assignment_received_ = true;
+    std::ostringstream mapped_edges;
+    for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
+      if (edge) mapped_edges << ",";
+      mapped_edges << edgeName(edge);
+    }
     ROS_WARN_STREAM("[6UAV_CRITERION] generation=" << generation
                     << " slot topology mapped to physical edges: "
-                    << edgeName(0) << "," << edgeName(1) << ","
-                    << edgeName(2) << "," << edgeName(3) << ","
-                    << edgeName(4) << "," << edgeName(5) << ","
-                    << edgeName(6));
+                    << mapped_edges.str());
   }
 
   void loadParameters() {
@@ -551,13 +570,14 @@ class SixUavShadow {
                         const std::array<double, kEdgeCount>& clearances,
                         const Vec3& center) {
     const ros::Time now = ros::Time::now();
-    const std::array<bool, 2> front_was_keep{{
-        edge_states_[0] == EdgeState::KEEP,
-        edge_states_[1] == EdgeState::KEEP}};
+    std::array<bool, kRowEdgeCount> front_was_keep{};
+    for (std::size_t edge = 0; edge < kRowEdgeCount; ++edge)
+      front_was_keep[edge] = edge_states_[edge] == EdgeState::KEEP;
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
       const double edge_distance = planarDistance(
           positions_[gEdges[edge][0]], positions_[gEdges[edge][1]]);
-      if ((edge == 2 || edge == 3) && rearForcedCutActive(edge, now)) {
+      if (edge >= kRowEdgeCount && edge < 2 * kRowEdgeCount &&
+          rearForcedCutActive(edge, now)) {
         cutEdge(edge, now);
         continue;
       }
@@ -612,14 +632,16 @@ class SixUavShadow {
       }
     }
 
-    if (front_was_keep[0] && edge_states_[0] == EdgeState::CUT)
-      triggerRearSplitPropagation(0, 2, now);  // 0-1 propagates to 3-4.
-    if (front_was_keep[1] && edge_states_[1] == EdgeState::CUT)
-      triggerRearSplitPropagation(1, 3, now);  // 1-2 propagates to 4-5.
+    for (std::size_t edge = 0; edge < kRowEdgeCount; ++edge) {
+      if (front_was_keep[edge] && edge_states_[edge] == EdgeState::CUT)
+        triggerRearSplitPropagation(edge, edge + kRowEdgeCount, now);
+    }
   }
 
   std::vector<std::vector<int>> connectedComponents() const {
-    std::array<int, kUavCount> parent{{0, 1, 2, 3, 4, 5}};
+    std::array<int, kUavCount> parent{};
+    for (std::size_t id = 0; id < kUavCount; ++id)
+      parent[id] = static_cast<int>(id);
     const auto find_root = [&parent](int value) {
       int root = value;
       while (parent[root] != root) root = parent[root];
@@ -640,7 +662,8 @@ class SixUavShadow {
         unite(gEdges[edge][0], gEdges[edge][1]);
     }
     std::vector<std::vector<int>> components;
-    std::array<int, kUavCount> component_index{{-1, -1, -1, -1, -1, -1}};
+    std::array<int, kUavCount> component_index{};
+    component_index.fill(-1);
     for (int id = 0; id < static_cast<int>(kUavCount); ++id) {
       const int root = find_root(id);
       if (component_index[root] < 0) {
@@ -650,6 +673,15 @@ class SixUavShadow {
       components[component_index[root]].push_back(id);
     }
     return components;
+  }
+
+  uint32_t edgeKeepMask() const {
+    uint32_t mask = 0;
+    for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
+      if (edge_states_[edge] == EdgeState::KEEP)
+        mask |= (uint32_t{1} << edge);
+    }
+    return mask;
   }
 
   std::string componentText(
@@ -739,6 +771,8 @@ class SixUavShadow {
             << ",\"state\":\"" << state << "\",\"components\":\""
             << components << "\",\"center_x\":" << center.x
             << ",\"center_y\":" << center.y
+            << ",\"edge_count\":" << kEdgeCount
+            << ",\"edge_keep_mask\":" << edgeKeepMask()
             << ",\"cut_score\":"
             << *std::min_element(scores.begin(), scores.end())
             << ",\"max_edge_distance\":" << max_edge_distance;
@@ -872,11 +906,8 @@ class SixUavShadow {
   ros::Timer timer_;
   std::array<Vec3, kUavCount> positions_{};
   std::array<ros::Time, kUavCount> odom_stamps_{};
-  std::array<bool, kUavCount> odom_seen_{{false, false, false,
-                                         false, false, false}};
-  std::array<EdgeState, kEdgeCount> edge_states_{{
-      EdgeState::KEEP, EdgeState::KEEP, EdgeState::KEEP, EdgeState::KEEP,
-      EdgeState::KEEP, EdgeState::KEEP, EdgeState::KEEP}};
+  std::array<bool, kUavCount> odom_seen_{};
+  std::array<EdgeState, kEdgeCount> edge_states_{};
   std::array<double, kEdgeCount> pending_distances_{};
   std::array<bool, kEdgeCount> pending_seen_{};
   std::array<Vec3, kEdgeCount> pending_centers_{};

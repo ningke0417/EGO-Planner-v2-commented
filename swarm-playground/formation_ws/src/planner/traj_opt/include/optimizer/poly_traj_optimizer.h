@@ -2,6 +2,8 @@
 #define _POLY_TRAJ_OPTIMIZER_H_
 
 #include <Eigen/Eigen>
+#include <array>
+#include <cstdint>
 #include <path_searching/dyn_a_star.h>
 #include <plan_env/grid_map.h>
 #include <ros/ros.h>
@@ -101,6 +103,8 @@ namespace ego_planner
     bool manual_formation_split_{false};
     bool dynamic_formation_groups_active_{false};
     std::vector<int> dynamic_formation_groups_;
+    bool dynamic_formation_edges_active_{false};
+    std::vector<bool> dynamic_formation_neighbors_;
     bool split_side_guidance_enabled_{false};
     Eigen::MatrixXd formation_;
     Eigen::MatrixXd canonical_formation_;
@@ -146,6 +150,8 @@ namespace ego_planner
     bool setFormationAssignment(const std::vector<int> &assignment);
     void setManualFormationSplit(const bool enabled);
     void setDynamicFormationGroups(const std::vector<int> &groups);
+    bool setDynamicFormationEdges(uint32_t edge_count, uint32_t edge_keep_mask,
+                                  const std::vector<int> &assignment);
     void setSplitSubgroupFormationWeightScale(const double scale);
     void setSplitProgressSyncWeightScale(const double scale);
     void beginMergeSynchronization(const Eigen::Vector3d &position);

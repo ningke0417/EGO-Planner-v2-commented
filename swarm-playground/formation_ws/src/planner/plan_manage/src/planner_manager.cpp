@@ -23,6 +23,14 @@ namespace ego_planner
     ploy_traj_opt_->setDynamicFormationGroups(groups);
   }
 
+  bool EGOPlannerManager::setDynamicFormationEdges(
+      const uint32_t edge_count, const uint32_t edge_keep_mask,
+      const std::vector<int> &assignment)
+  {
+    return ploy_traj_opt_->setDynamicFormationEdges(
+        edge_count, edge_keep_mask, assignment);
+  }
+
   void EGOPlannerManager::setSplitSubgroupFormationWeightScale(const double scale)
   {
     ploy_traj_opt_->setSplitSubgroupFormationWeightScale(scale);

@@ -255,6 +255,14 @@ Visualization Manager:
       Value: true
     - Class: rviz/MarkerArray
       Enabled: true
+      Marker Topic: /starconvex_shadow_8uav/markers
+      Name: eight_uav_starconvex_criterion
+      Namespaces:
+        {}
+      Queue Size: 10
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
       Marker Topic: /formation_backend_visualizer_6uav/markers
       Name: six_uav_backend_topology
       Namespaces:
@@ -262,6 +270,19 @@ Visualization Manager:
         six_uav_backend_group_halos: true
         six_uav_backend_group_labels: true
         six_uav_backend_state: true
+      Queue Size: 10
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /formation_backend_visualizer_8uav/markers
+      Name: eight_uav_backend_topology
+      Namespaces:
+        six_uav_backend_connected_edges: true
+        six_uav_backend_cut_edges: true
+        six_uav_backend_group_halos: true
+        six_uav_backend_group_labels: true
+        six_uav_backend_state: true
+        six_uav_backend_unknown_edges: true
       Queue Size: 10
       Value: true
     - Class: rviz/MarkerArray
@@ -276,6 +297,14 @@ Visualization Manager:
       Enabled: true
       Marker Topic: /subgroup_route_intent_4uav/markers
       Name: subgroup_route_intent_shadow
+      Namespaces:
+        {}
+      Queue Size: 10
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /subgroup_route_intent_8uav/markers
+      Name: eight_uav_subgroup_route_intent
       Namespaces:
         {}
       Queue Size: 10

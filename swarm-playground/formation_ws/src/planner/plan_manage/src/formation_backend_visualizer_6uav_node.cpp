@@ -14,14 +14,26 @@
 #include <std_msgs/UInt32MultiArray.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
+#include <ego_planner/FormationTopologyCommand.h>
 
 namespace {
 
-constexpr std::size_t kUavCount = 6;
+#ifndef FORMATION_UAV_COUNT
+#define FORMATION_UAV_COUNT 6
+#endif
+
+constexpr std::size_t kUavCount = FORMATION_UAV_COUNT;
+#if FORMATION_UAV_COUNT == 8
+constexpr std::size_t kEdgeCount = 10;
+const std::array<std::array<int, 2>, kEdgeCount> kSlotEdges{{
+    {{0, 1}}, {{1, 2}}, {{2, 3}}, {{4, 5}}, {{5, 6}}, {{6, 7}},
+    {{0, 4}}, {{1, 5}}, {{2, 6}}, {{3, 7}}}};
+#else
 constexpr std::size_t kEdgeCount = 7;
 const std::array<std::array<int, 2>, kEdgeCount> kSlotEdges{{
     {{0, 1}}, {{1, 2}}, {{3, 4}}, {{4, 5}},
     {{0, 3}}, {{1, 4}}, {{2, 5}}}};
+#endif
 std::array<std::array<int, 2>, kEdgeCount> gEdges = kSlotEdges;
 
 class SixUavBackendVisualizer {
@@ -50,6 +62,10 @@ class SixUavBackendVisualizer {
     assignment_subscriber_ = nh_.subscribe<std_msgs::UInt32MultiArray>(
         "/formation_backend/initial_assignment", 1,
         &SixUavBackendVisualizer::assignmentCallback, this);
+    topology_command_subscriber_ =
+        nh_.subscribe<ego_planner::FormationTopologyCommand>(
+            "/formation_backend/topology_command", 10,
+            &SixUavBackendVisualizer::topologyCommandCallback, this);
     marker_publisher_ = private_nh_.advertise<visualization_msgs::MarkerArray>(
         "markers", 1, true);
     timer_ = nh_.createTimer(ros::Duration(1.0 / publish_rate_),
@@ -58,6 +74,23 @@ class SixUavBackendVisualizer {
   }
 
  private:
+  void topologyCommandCallback(
+      const ego_planner::FormationTopologyCommand::ConstPtr& message) {
+    if (message->edge_count == 0) {
+      exact_edge_state_seen_ = false;
+      return;
+    }
+    if (message->edge_count != kEdgeCount ||
+        message->edge_keep_mask >= (uint32_t{1} << kEdgeCount)) {
+      ROS_ERROR_STREAM("[FORMATION_VISUALIZER] Reject edge mask "
+                       << message->edge_keep_mask << "/"
+                       << message->edge_count);
+      return;
+    }
+    edge_keep_mask_ = message->edge_keep_mask;
+    exact_edge_state_seen_ = true;
+  }
+
   void assignmentCallback(const std_msgs::UInt32MultiArray::ConstPtr& message) {
     const bool versioned = message->data.size() == kUavCount + 1;
     if (!versioned && message->data.size() != kUavCount) {
@@ -71,7 +104,7 @@ class SixUavBackendVisualizer {
       return;
     const std::size_t offset = versioned ? 1 : 0;
     std::array<int, kUavCount> slot_to_drone{};
-    std::array<bool, kUavCount> seen{{false, false, false, false, false, false}};
+    std::array<bool, kUavCount> seen{};
     for (std::size_t drone = 0; drone < kUavCount; ++drone) {
       const std::size_t slot = message->data[drone + offset];
       if (slot >= kUavCount || seen[slot]) {
@@ -159,7 +192,16 @@ class SixUavBackendVisualizer {
     const bool all_intact =
         std::all_of(groups_.begin(), groups_.end(),
                     [](const std::string& group) { return group == "INTACT"; });
-    if (all_intact) return "INTACT {0,1,2,3,4,5}";
+    if (all_intact) {
+      std::ostringstream intact;
+      intact << "INTACT {";
+      for (std::size_t id = 0; id < kUavCount; ++id) {
+        if (id) intact << ",";
+        intact << id;
+      }
+      intact << "}";
+      return intact.str();
+    }
 
     const bool any_intact =
         std::any_of(groups_.begin(), groups_.end(),
@@ -190,23 +232,27 @@ class SixUavBackendVisualizer {
       const int first = gEdges[edge][0];
       const int second = gEdges[edge][1];
       const bool known = group_seen_[first] && group_seen_[second];
-      const bool connected = sameGroup(first, second);
+      const bool edge_state_known = exact_edge_state_seen_ || known;
+      const bool connected = exact_edge_state_seen_
+                                 ? (edge_keep_mask_ &
+                                    (uint32_t{1} << edge)) != 0
+                                 : sameGroup(first, second);
 
       visualization_msgs::Marker line;
       line.header = header;
       line.ns = connected
                     ? "six_uav_backend_connected_edges"
-                    : (known ? "six_uav_backend_cut_edges"
-                             : "six_uav_backend_unknown_edges");
+                    : (edge_state_known ? "six_uav_backend_cut_edges"
+                                        : "six_uav_backend_unknown_edges");
       line.id = static_cast<int>(edge);
       line.type = visualization_msgs::Marker::LINE_LIST;
       line.action = visualization_msgs::Marker::ADD;
       line.pose.orientation.w = 1.0;
       line.scale.x = connected ? 0.085 : 0.045;
       line.color.a = connected ? 1.0 : 0.8;
-      line.color.r = connected ? 0.15 : (known ? 1.0 : 0.65);
-      line.color.g = connected ? 0.95 : (known ? 0.10 : 0.65);
-      line.color.b = connected ? 0.95 : (known ? 0.05 : 0.65);
+      line.color.r = connected ? 0.15 : (edge_state_known ? 1.0 : 0.65);
+      line.color.g = connected ? 0.95 : (edge_state_known ? 0.10 : 0.65);
+      line.color.b = connected ? 0.95 : (edge_state_known ? 0.05 : 0.65);
       if (connected) {
         line.points.push_back(interpolatedPoint(first, second, 0.0));
         line.points.push_back(interpolatedPoint(first, second, 1.0));
@@ -302,18 +348,19 @@ class SixUavBackendVisualizer {
   std::array<ros::Subscriber, kUavCount> odom_subscribers_;
   std::array<ros::Subscriber, kUavCount> group_subscribers_;
   ros::Subscriber assignment_subscriber_;
+  ros::Subscriber topology_command_subscriber_;
   ros::Publisher marker_publisher_;
   ros::Timer timer_;
   std::array<geometry_msgs::Point, kUavCount> positions_{};
   std::array<std::string, kUavCount> groups_{};
-  std::array<bool, kUavCount> odom_seen_{{false, false, false,
-                                         false, false, false}};
-  std::array<bool, kUavCount> group_seen_{{false, false, false,
-                                          false, false, false}};
+  std::array<bool, kUavCount> odom_seen_{};
+  std::array<bool, kUavCount> group_seen_{};
   std::string odom_suffix_;
   std::string frame_id_;
   double publish_rate_{10.0};
   uint32_t assignment_generation_{0};
+  uint32_t edge_keep_mask_{0};
+  bool exact_edge_state_seen_{false};
   bool assignment_received_{false};
 };
 

@@ -63,6 +63,8 @@ namespace ego_planner
     bool setFormationAssignment(const std::vector<int> &assignment);
     void setManualFormationSplit(const bool enabled);
     void setDynamicFormationGroups(const std::vector<int> &groups);
+    bool setDynamicFormationEdges(uint32_t edge_count, uint32_t edge_keep_mask,
+                                  const std::vector<int> &assignment);
     void setSplitSubgroupFormationWeightScale(const double scale);
     void setSplitProgressSyncWeightScale(const double scale);
     void beginMergeSynchronization(const Eigen::Vector3d &position);

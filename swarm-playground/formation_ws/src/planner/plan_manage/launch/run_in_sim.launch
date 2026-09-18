@@ -57,6 +57,10 @@
     <arg name="formation_drone4_y" default="1.0"/>
     <arg name="formation_drone5_x" default="-1.0"/>
     <arg name="formation_drone5_y" default="-0.5"/>
+    <arg name="formation_drone6_x" default="-1.0"/>
+    <arg name="formation_drone6_y" default="0.5"/>
+    <arg name="formation_drone7_x" default="-1.0"/>
+    <arg name="formation_drone7_y" default="1.5"/>
     <arg name="max_vel" default="1.5"/>
     <arg name="point_num" default="4"/>
     <arg name="point0_x" default="0.0"/>
@@ -116,6 +120,10 @@
         <arg name="formation_drone4_y" value="$(arg formation_drone4_y)"/>
         <arg name="formation_drone5_x" value="$(arg formation_drone5_x)"/>
         <arg name="formation_drone5_y" value="$(arg formation_drone5_y)"/>
+        <arg name="formation_drone6_x" value="$(arg formation_drone6_x)"/>
+        <arg name="formation_drone6_y" value="$(arg formation_drone6_y)"/>
+        <arg name="formation_drone7_x" value="$(arg formation_drone7_x)"/>
+        <arg name="formation_drone7_y" value="$(arg formation_drone7_y)"/>
         <!-- camera pose: transform of camera frame in the world frame -->
         <!-- depth topic: depth image, 640x480 by default -->
         <!-- don't set cloud_topic if you already set these ones! -->

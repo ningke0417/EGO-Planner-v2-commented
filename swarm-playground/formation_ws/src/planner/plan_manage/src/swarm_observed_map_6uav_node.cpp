@@ -16,7 +16,11 @@
 
 namespace {
 
-constexpr std::size_t kUavCount = 6;
+#ifndef FORMATION_UAV_COUNT
+#define FORMATION_UAV_COUNT 6
+#endif
+
+constexpr std::size_t kUavCount = FORMATION_UAV_COUNT;
 constexpr double kPi = 3.14159265358979323846;
 
 struct VoxelIndex {
@@ -277,11 +281,10 @@ class SwarmObservedMap {
   ros::Publisher free_publisher_;
   ros::Timer publish_timer_;
   std::array<nav_msgs::Odometry, kUavCount> poses_;
-  std::array<bool, kUavCount> odom_received_{{false, false, false,
-                                              false, false, false}};
+  std::array<bool, kUavCount> odom_received_{};
   std::array<ros::Time, kUavCount> odom_receipt_stamps_;
   std::array<ros::Time, kUavCount> last_cloud_updates_;
-  std::array<int, kUavCount> observation_counts_{{0, 0, 0, 0, 0, 0}};
+  std::array<int, kUavCount> observation_counts_{};
   std::unordered_set<VoxelIndex, VoxelIndexHash> occupied_;
   std::unordered_set<VoxelIndex, VoxelIndexHash> known_free_;
   ros::Time last_observation_stamp_;

@@ -425,6 +425,8 @@ namespace ego_planner
     ack.drone_id = planner_manager_->pp_.drone_id;
     ack.mode = topology_mode_;
     ack.components = topology_components_;
+    ack.edge_count = topology_edge_count_;
+    ack.edge_keep_mask = topology_edge_keep_mask_;
     ack.group_id = dynamic_topology_active_
                        ? dynamicGroupForDrone(planner_manager_->pp_.drone_id)
                        : -1;
@@ -440,6 +442,10 @@ namespace ego_planner
     if (form_num_ == 6 && general_dynamic_topology_enabled_)
       formation_edges = {{{0, 1}}, {{1, 2}}, {{3, 4}}, {{4, 5}},
                          {{0, 3}}, {{1, 4}}, {{2, 5}}};
+    else if (form_num_ == 8 && general_dynamic_topology_enabled_)
+      formation_edges = {{{0, 1}}, {{1, 2}}, {{2, 3}},
+                         {{4, 5}}, {{5, 6}}, {{6, 7}},
+                         {{0, 4}}, {{1, 5}}, {{2, 6}}, {{3, 7}}};
     else
       formation_edges = {{{0, 1}}, {{1, 3}}, {{3, 2}}, {{2, 0}}};
     if (formation_assignment_.size() == static_cast<std::size_t>(form_num_))
@@ -458,10 +464,14 @@ namespace ego_planner
       if (edge > 0) edges << " ";
       const int first = formation_edges[edge][0];
       const int second = formation_edges[edge][1];
-      const bool connected = !dynamic_topology_active_ ||
-          (first < static_cast<int>(dynamic_formation_groups_.size()) &&
-           second < static_cast<int>(dynamic_formation_groups_.size()) &&
-           dynamic_formation_groups_[first] == dynamic_formation_groups_[second]);
+      const bool have_exact_edges =
+          topology_edge_count_ == formation_edges.size();
+      const bool connected = have_exact_edges
+          ? (topology_edge_keep_mask_ & (uint32_t{1} << edge)) != 0
+          : (!dynamic_topology_active_ ||
+             (first < static_cast<int>(dynamic_formation_groups_.size()) &&
+              second < static_cast<int>(dynamic_formation_groups_.size()) &&
+              dynamic_formation_groups_[first] == dynamic_formation_groups_[second]));
       edges << first << "-" << second << ":" << (connected ? "on" : "cut");
     }
     ROS_WARN_STREAM("[TOPOLOGY_APPLIED] drone="
@@ -484,6 +494,17 @@ namespace ego_planner
     {
       ROS_ERROR("[FORMATION_BACKEND] Reject epoch %lu with invalid mode %u",
                 static_cast<unsigned long>(msg->epoch), msg->mode);
+      return;
+    }
+    const uint32_t expected_edge_count =
+        form_num_ == 8 ? 10u : (form_num_ == 6 ? 7u : 0u);
+    if (msg->edge_count != 0u &&
+        (msg->edge_count != expected_edge_count ||
+         msg->edge_keep_mask >= (uint32_t{1} << msg->edge_count)))
+    {
+      ROS_ERROR("[FORMATION_BACKEND] Reject epoch %lu with invalid edge mask %u/%u",
+                static_cast<unsigned long>(msg->epoch),
+                msg->edge_keep_mask, msg->edge_count);
       return;
     }
     if (msg->epoch < topology_epoch_)
@@ -517,6 +538,8 @@ namespace ego_planner
             ? std::max(0.0, msg->progress_sync_scale) : 0.0;
     const bool same_payload =
         msg->mode == topology_mode_ && components == topology_components_ &&
+        msg->edge_count == topology_edge_count_ &&
+        msg->edge_keep_mask == topology_edge_keep_mask_ &&
         std::fabs(formation_scale - split_formation_scale_) < 1e-6 &&
         std::fabs(progress_scale - split_progress_sync_scale_) < 1e-6;
     if (msg->epoch == topology_epoch_)
@@ -534,6 +557,9 @@ namespace ego_planner
 
     const bool topology_changed =
         msg->mode != topology_mode_ || components != topology_components_;
+    const bool edge_topology_changed =
+        msg->edge_count != topology_edge_count_ ||
+        msg->edge_keep_mask != topology_edge_keep_mask_;
     const bool scale_changed =
         std::fabs(formation_scale - split_formation_scale_) >= 1e-6 ||
         std::fabs(progress_scale - split_progress_sync_scale_) >= 1e-6;
@@ -556,6 +582,8 @@ namespace ego_planner
     topology_epoch_ = msg->epoch;
     topology_mode_ = msg->mode;
     topology_components_ = components;
+    topology_edge_count_ = msg->edge_count;
+    topology_edge_keep_mask_ = msg->edge_keep_mask;
     manual_formation_split_ = msg->mode == FormationTopologyCommand::SPLIT;
     dynamic_topology_active_ = manual_formation_split_;
     dynamic_formation_groups_ = groups;
@@ -564,6 +592,11 @@ namespace ego_planner
 
     planner_manager_->setManualFormationSplit(manual_formation_split_);
     planner_manager_->setDynamicFormationGroups(dynamic_formation_groups_);
+    if (manual_formation_split_ && topology_edge_count_ > 0 &&
+        !planner_manager_->setDynamicFormationEdges(
+            topology_edge_count_, topology_edge_keep_mask_,
+            formation_assignment_))
+      ROS_ERROR("[FORMATION_BACKEND] Failed to apply exact formation edge mask");
     planner_manager_->setSplitSubgroupFormationWeightScale(split_formation_scale_);
     planner_manager_->setSplitProgressSyncWeightScale(split_progress_sync_scale_);
     if (components_merged && have_odom_)
@@ -582,7 +615,7 @@ namespace ego_planner
     publishTopologyAck();
     logEffectiveTopology(msg->reason);
 
-    if ((topology_changed || scale_changed) && have_target_ &&
+    if ((topology_changed || edge_topology_changed || scale_changed) && have_target_ &&
         (exec_state_ == EXEC_TRAJ || exec_state_ == REPLAN_TRAJ ||
          exec_state_ == GEN_NEW_TRAJ))
       changeFSMExecState(REPLAN_TRAJ, "TOPOLOGY_COMMAND");
@@ -633,11 +666,20 @@ namespace ego_planner
         assignment[my_id] != formation_assignment_[my_id];
     formation_assignment_ = assignment;
     formation_pos_ = formation_slots_[assignment[my_id]];
+    if (manual_formation_split_ && topology_edge_count_ > 0 &&
+        !planner_manager_->setDynamicFormationEdges(
+            topology_edge_count_, topology_edge_keep_mask_,
+            formation_assignment_))
+      ROS_ERROR("[FORMATION_ASSIGNMENT] unable to remap exact formation edges");
     if (my_slot_changed && have_target_ && !refreshAssignedWaypointTarget())
     {
       planner_manager_->setFormationAssignment(previous_assignment);
       formation_assignment_ = previous_assignment;
       formation_pos_ = previous_formation_pos;
+      if (manual_formation_split_ && topology_edge_count_ > 0)
+        planner_manager_->setDynamicFormationEdges(
+            topology_edge_count_, topology_edge_keep_mask_,
+            formation_assignment_);
       ROS_ERROR_STREAM("[FORMATION_ASSIGNMENT] generation=" << generation
                        << " unable to refresh assigned waypoint; assignment rolled back");
       return;

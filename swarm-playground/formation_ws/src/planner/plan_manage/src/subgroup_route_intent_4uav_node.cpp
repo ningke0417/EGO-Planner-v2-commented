@@ -109,7 +109,7 @@ class SubgroupRouteIntent {
     obstacle_subscriber_ = nh_.subscribe<sensor_msgs::PointCloud2>(
         obstacle_cloud_topic_, 1,
         &SubgroupRouteIntent::obstacleCallback, this);
-    if (kUavCount == 6) {
+    if (kUavCount > 4) {
       known_free_subscriber_ = nh_.subscribe<sensor_msgs::PointCloud2>(
           known_free_cloud_topic_, 1,
           &SubgroupRouteIntent::knownFreeCallback, this);
@@ -207,9 +207,9 @@ class SubgroupRouteIntent {
   }
 
   void rebuildObstacleField() {
-    if (!occupied_seen_ || (kUavCount == 6 && !known_free_seen_)) return;
+    if (!occupied_seen_ || (kUavCount > 4 && !known_free_seen_)) return;
     try {
-      if (kUavCount == 6) {
+      if (kUavCount > 4) {
         obstacle_field_.reset(new VoxelObstacleField(
             latest_occupied_cloud_, latest_known_free_cloud_,
             voxel_resolution_, obstacle_inflation_));
@@ -288,7 +288,7 @@ class SubgroupRouteIntent {
     const Vec3& origin = positions_[uav];
     const Vec3 endpoint{origin.x + sensor_range_ * std::cos(angle),
                         origin.y + sensor_range_ * std::sin(angle), origin.z};
-    const Vec3 hit = kUavCount == 6
+    const Vec3 hit = kUavCount > 4
                          ? obstacle_field_->firstUnsafe(
                                origin, endpoint, raycast_resolution_)
                          : obstacle_field_->firstHit(
@@ -489,7 +489,7 @@ class SubgroupRouteIntent {
 	    release_candidate_started_ = ros::Time();
 	    release_fade_started_ = ros::Time();
 	    previous_angle_valid_ = {{false, false}};
-	    previous_drone_angle_valid_ = {{false, false, false, false}};
+	    previous_drone_angle_valid_.fill(false);
 	    dynamic_locked_sides_.fill(0);
 	    dynamic_release_candidate_started_ = ros::Time();
 	  }
@@ -978,14 +978,13 @@ class SubgroupRouteIntent {
   ros::Timer timer_;
   std::array<Vec3, kUavCount> positions_;
   std::array<ros::Time, kUavCount> odom_stamps_;
-  std::array<bool, kUavCount> odom_seen_{{false, false, false, false}};
+	  std::array<bool, kUavCount> odom_seen_{};
 	  std::array<std::string, kUavCount> backend_groups_;
-	  std::array<bool, kUavCount> backend_group_seen_{{false, false, false, false}};
+	  std::array<bool, kUavCount> backend_group_seen_{};
 	  std::array<double, kGroupCount> previous_angles_{{0.0, 0.0}};
 	  std::array<bool, kGroupCount> previous_angle_valid_{{false, false}};
-	  std::array<double, kUavCount> previous_drone_angles_{{0.0, 0.0, 0.0, 0.0}};
-	  std::array<bool, kUavCount> previous_drone_angle_valid_{
-	      {false, false, false, false}};
+  std::array<double, kUavCount> previous_drone_angles_{};
+	  std::array<bool, kUavCount> previous_drone_angle_valid_{};
   std::array<int, kUavCount> dynamic_locked_sides_{};
   ros::Time dynamic_release_candidate_started_;
   std::unique_ptr<VoxelObstacleField> obstacle_field_;

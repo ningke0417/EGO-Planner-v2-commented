@@ -1619,6 +1619,12 @@ namespace ego_planner
           same_group =
               dynamic_formation_groups_[id] == dynamic_formation_groups_[drone_id_];
         }
+        if (dynamic_formation_edges_active_)
+        {
+          same_group = id >= 0 &&
+                       id < static_cast<int>(dynamic_formation_neighbors_.size()) &&
+                       dynamic_formation_neighbors_[id];
+        }
         if (!same_group || id == drone_id_ ||
             id >= static_cast<int>(swarm_trajs_->size()) ||
             swarm_trajs_->at(id).drone_id != id)
@@ -2056,6 +2062,8 @@ namespace ego_planner
     {
       dynamic_formation_groups_active_ = false;
       dynamic_formation_groups_.clear();
+      dynamic_formation_edges_active_ = false;
+      dynamic_formation_neighbors_.clear();
       subgroup_route_intent_active_ = false;
       subgroup_route_intent_gain_ = 0.0;
     }
@@ -2067,6 +2075,48 @@ namespace ego_planner
     dynamic_formation_groups_active_ =
         manual_formation_split_ &&
         static_cast<int>(dynamic_formation_groups_.size()) >= formation_num_;
+  }
+
+  bool PolyTrajOptimizer::setDynamicFormationEdges(
+      const uint32_t edge_count, const uint32_t edge_keep_mask,
+      const std::vector<int> &assignment)
+  {
+    dynamic_formation_edges_active_ = false;
+    dynamic_formation_neighbors_.assign(formation_num_, false);
+    if (!manual_formation_split_ ||
+        static_cast<int>(assignment.size()) != formation_num_)
+      return false;
+
+    std::vector<std::array<int, 2>> slot_edges;
+    if (formation_num_ == 8)
+      slot_edges = {{{0, 1}}, {{1, 2}}, {{2, 3}},
+                    {{4, 5}}, {{5, 6}}, {{6, 7}},
+                    {{0, 4}}, {{1, 5}}, {{2, 6}}, {{3, 7}}};
+    else if (formation_num_ == 6)
+      slot_edges = {{{0, 1}}, {{1, 2}}, {{3, 4}}, {{4, 5}},
+                    {{0, 3}}, {{1, 4}}, {{2, 5}}};
+    else
+      return false;
+    if (edge_count != slot_edges.size()) return false;
+
+    std::vector<int> drone_for_slot(formation_num_, -1);
+    for (int drone = 0; drone < formation_num_; ++drone)
+    {
+      const int slot = assignment[drone];
+      if (slot < 0 || slot >= formation_num_ || drone_for_slot[slot] >= 0)
+        return false;
+      drone_for_slot[slot] = drone;
+    }
+    for (std::size_t edge = 0; edge < slot_edges.size(); ++edge)
+    {
+      if ((edge_keep_mask & (uint32_t{1} << edge)) == 0) continue;
+      const int first = drone_for_slot[slot_edges[edge][0]];
+      const int second = drone_for_slot[slot_edges[edge][1]];
+      if (first == drone_id_) dynamic_formation_neighbors_[second] = true;
+      if (second == drone_id_) dynamic_formation_neighbors_[first] = true;
+    }
+    dynamic_formation_edges_active_ = true;
+    return true;
   }
 
   void PolyTrajOptimizer::setSplitSubgroupFormationWeightScale(const double scale)

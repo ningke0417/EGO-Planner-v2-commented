@@ -101,6 +101,8 @@ namespace ego_planner
     uint64_t topology_epoch_{0};
     uint8_t topology_mode_{FormationTopologyCommand::INTACT};
     std::string topology_components_{"INTACT"};
+    uint32_t topology_edge_count_{0};
+    uint32_t topology_edge_keep_mask_{0};
     double subgroup_route_intent_angle_{0.0};
     double subgroup_route_intent_gain_{0.0};
     double subgroup_route_intent_timeout_{1.0};
