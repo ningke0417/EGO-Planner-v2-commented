@@ -21,6 +21,7 @@
     <arg name="safety_distance" default="0.2"/>
     <arg name="wall_guard_check_horizon" default="3.0"/>
     <arg name="formation_weight" default="100"/>
+    <arg name="use_wall_collision_guard" default="true"/>
 
     <include file="$(find ego_planner)/launch/run_in_sim.launch">
         <arg name="drone_id" value="$(arg drone_id)"/>
@@ -36,7 +37,7 @@
 
         <arg name="obstacles_inflation" value="$(arg safety_distance)"/>
         <arg name="obstacle_clearance" value="$(arg safety_distance)"/>
-        <arg name="use_wall_collision_guard" value="true"/>
+        <arg name="use_wall_collision_guard" value="$(arg use_wall_collision_guard)"/>
         <arg name="wall_x" value="$(arg wall_x)"/>
         <arg name="wall_y" value="$(arg wall_y)"/>
         <arg name="wall_size_x" value="$(arg wall_size_x)"/>

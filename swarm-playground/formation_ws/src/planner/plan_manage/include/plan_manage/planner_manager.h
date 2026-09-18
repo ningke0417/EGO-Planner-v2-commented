@@ -50,6 +50,15 @@ namespace ego_planner
         Eigen::Vector3d &local_target_pos, Eigen::Vector3d &local_target_vel,
         bool &touch_goal);
     bool EmergencyStop(Eigen::Vector3d stop_pos);
+    bool EmergencyEscape(const Eigen::Vector3d &start_pos,
+                         const Eigen::Vector3d &free_pos);
+    bool findNearestCollisionFreePosition(const Eigen::Vector3d &position,
+                                           Eigen::Vector3d &free_position) const;
+    bool findDirectionalCollisionFreePosition(
+        const Eigen::Vector3d &position,
+        const Eigen::Vector3d &preferred_direction,
+        const double minimum_displacement,
+        Eigen::Vector3d &free_position) const;
     bool checkCollision(int drone_id);
     bool setFormationAssignment(const std::vector<int> &assignment);
     void setManualFormationSplit(const bool enabled);

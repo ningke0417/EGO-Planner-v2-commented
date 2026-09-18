@@ -35,9 +35,6 @@ class SixUavAutoSplitBridge {
     private_nh_.param("topology_change_persistence",
                       topology_change_persistence_, 0.4);
     private_nh_.param("auto_merge_enabled", auto_merge_enabled_, true);
-    private_nh_.param("merge_wall_x", merge_wall_x_, 0.0);
-    private_nh_.param("merge_wall_half_x", merge_wall_half_x_, 0.25);
-    private_nh_.param("merge_after_wall_margin", merge_after_wall_margin_, 1.5);
     private_nh_.param("merge_max_edge_distance",
                       merge_max_edge_distance_, 3.0);
     private_nh_.param("merge_ready_persistence",
@@ -68,8 +65,7 @@ class SixUavAutoSplitBridge {
                       secondary_distance_split_threshold_, 1.80);
     private_nh_.param("ack_timeout", ack_timeout_, 2.0);
     if (criterion_timeout_ <= 0.0 || split_ready_persistence_ < 0.0 ||
-        topology_change_persistence_ < 0.0 || merge_wall_half_x_ < 0.0 ||
-        merge_after_wall_margin_ < 0.0 || merge_max_edge_distance_ <= 0.0 ||
+        topology_change_persistence_ < 0.0 || merge_max_edge_distance_ <= 0.0 ||
         merge_ready_persistence_ < 0.0 ||
         weak_reconnect_ready_persistence_ < 0.0 ||
         weak_reconnect_visibility_threshold_ < 0.0 ||
@@ -114,9 +110,7 @@ class SixUavAutoSplitBridge {
     publishStatus("6UAV AUTO_SPLIT ARMED");
     ROS_INFO_STREAM("[6UAV_AUTO_SPLIT] Armed. split_scale="
                     << split_formation_weight_scale_
-                    << " merge_gate_x="
-                    << merge_wall_x_ + merge_wall_half_x_ +
-                           merge_after_wall_margin_
+                    << " merge_source=observed_known_free_corridor"
                     << " merge_max_edge_distance="
                     << merge_max_edge_distance_
                     << " weak_reconnect="
@@ -569,6 +563,17 @@ class SixUavAutoSplitBridge {
     return false;
   }
 
+  bool finalVisibilityMergeReady() const {
+    for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
+      if (edge_visibility_[edge] + 1e-9 <
+              weak_reconnect_visibility_threshold_ ||
+          edge_distances_[edge] > merge_max_edge_distance_) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   void leaveWeakRecovery(const std::string& components,
                          const std::string& reason) {
     weak_recovery_active_ = false;
@@ -614,43 +619,14 @@ class SixUavAutoSplitBridge {
       return true;
     }
 
-    if (criterion_state_ != "INTACT") {
-      // Increase the formation pull only after the reassignment is
-      // acknowledged and a matching-generation summary confirms visibility.
-      // Do not issue another ramp command once the final merge gate is ready.
-      if (weak_recovery_ramp_since_.isZero()) {
-        weak_recovery_ramp_since_ = now;
-        publishStatus("6UAV WEAK_RECOVERY RAMP_INITIAL");
-      }
-      const double ramp_elapsed =
-          (now - weak_recovery_ramp_since_).toSec();
-      if (ramp_elapsed >= 2.0 * weak_reconnect_ramp_step_duration_ &&
-          active_command_.formation_scale + 1e-9 <
-              weak_reconnect_final_formation_weight_scale_) {
-        issueCommand(ego_planner::FormationTopologyCommand::SPLIT,
-                     kAllUavComponent, "WEAK_RECOVERY_RAMP_FINAL",
-                     weak_reconnect_final_formation_weight_scale_);
-        return true;
-      }
-      if (ramp_elapsed >= weak_reconnect_ramp_step_duration_ &&
-          active_command_.formation_scale + 1e-9 <
-              weak_reconnect_mid_formation_weight_scale_) {
-        issueCommand(ego_planner::FormationTopologyCommand::SPLIT,
-                     kAllUavComponent, "WEAK_RECOVERY_RAMP_MID",
-                     weak_reconnect_mid_formation_weight_scale_);
-        return true;
-      }
+    // Once reassignment is acknowledged, merge from visibility and distance
+    // directly.  Waiting for criterion_state_ == INTACT would also require
+    // every StarConvex overlap score to reach merge_threshold_ and every cut
+    // edge to shrink to distance_merge_threshold_, even though all formation
+    // edges are already collision-free and mutually visible.
+    if (!finalVisibilityMergeReady()) {
       merge_ready_since_ = ros::Time(0);
-      publishStatus("6UAV WEAK_RECOVERY ACTIVE WAIT_CRITERION_INTACT");
-      return true;
-    }
-
-    const double merge_gate_x =
-        merge_wall_x_ + merge_wall_half_x_ + merge_after_wall_margin_;
-    if (center_x_ + 1e-9 < merge_gate_x ||
-        max_edge_distance_ > merge_max_edge_distance_) {
-      merge_ready_since_ = ros::Time(0);
-      publishStatus("6UAV WEAK_RECOVERY ACTIVE WAIT_FINAL_GATE");
+      publishStatus("6UAV WEAK_RECOVERY ACTIVE WAIT_FINAL_VISIBILITY_GATE");
       return true;
     }
     if (merge_ready_since_.isZero()) {
@@ -667,7 +643,7 @@ class SixUavAutoSplitBridge {
     weak_recovery_ramp_since_ = ros::Time(0);
     weak_recovery_source_components_.clear();
     issueCommand(ego_planner::FormationTopologyCommand::INTACT, "INTACT",
-                 "CRITERION_MERGED_AFTER_WEAK_RECOVERY");
+                 "VISIBILITY_MERGED_AFTER_WEAK_RECOVERY");
     return true;
   }
 
@@ -676,14 +652,6 @@ class SixUavAutoSplitBridge {
         active_command_.mode != ego_planner::FormationTopologyCommand::SPLIT ||
         active_command_.components == kAllUavComponent) {
       weak_reconnect_ready_since_ = ros::Time(0);
-      return false;
-    }
-
-    const double merge_gate_x =
-        merge_wall_x_ + merge_wall_half_x_ + merge_after_wall_margin_;
-    if (center_x_ + 1e-9 < merge_gate_x) {
-      weak_reconnect_ready_since_ = ros::Time(0);
-      publishStatus("6UAV WEAK_RECOVERY WAIT_POSITION_GATE");
       return false;
     }
 
@@ -731,10 +699,7 @@ class SixUavAutoSplitBridge {
       merge_ready_since_ = ros::Time(0);
       return;
     }
-    const double merge_gate_x =
-        merge_wall_x_ + merge_wall_half_x_ + merge_after_wall_margin_;
-    if (center_x_ + 1e-9 < merge_gate_x ||
-        max_edge_distance_ > merge_max_edge_distance_) {
+    if (max_edge_distance_ > merge_max_edge_distance_) {
       merge_ready_since_ = ros::Time(0);
       return;
     }
@@ -851,9 +816,6 @@ class SixUavAutoSplitBridge {
   double split_ready_persistence_{0.4};
   double topology_change_persistence_{0.4};
   bool auto_merge_enabled_{true};
-  double merge_wall_x_{0.0};
-  double merge_wall_half_x_{0.25};
-  double merge_after_wall_margin_{1.5};
   double merge_max_edge_distance_{3.0};
   double merge_ready_persistence_{0.3};
   bool weak_reconnect_enabled_{true};

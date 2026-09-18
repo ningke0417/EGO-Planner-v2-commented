@@ -16,14 +16,19 @@
     <arg name="wall_size_y" default="4.7"/>
     <arg name="safety_distance" default="0.2"/>
     <arg name="wall_guard_check_horizon" default="3.0"/>
-    <arg name="formation_weight" default="100"/>
+    <arg name="formation_weight" default="150"/>
+    <!-- Defaults preserve the historical fixed-wall baseline.  Wrapper
+         launches may supply another map and disable the wall-only guard. -->
+    <arg name="map_source" default="fixed_wall"/>
+    <arg name="use_wall_collision_guard" default="true"/>
 
     <include file="$(find swarm_bridge)/launch/bridge_udp.launch">
         <arg name="drone_id" value="999"/>
         <arg name="broadcast_ip" value="127.0.0.255"/>
     </include>
 
-    <node pkg="map_generator" type="fixed_wall_map" name="fixed_wall_map"
+    <node if="$(eval arg('map_source') == 'fixed_wall')"
+          pkg="map_generator" type="fixed_wall_map" name="fixed_wall_map"
           output="screen" required="true">
         <remap from="global_cloud" to="/map_generator/global_cloud"/>
         <param name="wall_x" value="$(arg wall_x)" type="double"/>
@@ -60,6 +65,7 @@
         <arg name="safety_distance" value="$(arg safety_distance)"/>
         <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
         <arg name="formation_weight" value="$(arg formation_weight)"/>
+        <arg name="use_wall_collision_guard" value="$(arg use_wall_collision_guard)"/>
     </include>
 
     <include file="$(find ego_planner)/launch/formation_6uav_wall_member.launch">
@@ -80,6 +86,7 @@
         <arg name="safety_distance" value="$(arg safety_distance)"/>
         <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
         <arg name="formation_weight" value="$(arg formation_weight)"/>
+        <arg name="use_wall_collision_guard" value="$(arg use_wall_collision_guard)"/>
     </include>
 
     <include file="$(find ego_planner)/launch/formation_6uav_wall_member.launch">
@@ -100,6 +107,7 @@
         <arg name="safety_distance" value="$(arg safety_distance)"/>
         <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
         <arg name="formation_weight" value="$(arg formation_weight)"/>
+        <arg name="use_wall_collision_guard" value="$(arg use_wall_collision_guard)"/>
     </include>
 
     <include file="$(find ego_planner)/launch/formation_6uav_wall_member.launch">
@@ -120,6 +128,7 @@
         <arg name="safety_distance" value="$(arg safety_distance)"/>
         <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
         <arg name="formation_weight" value="$(arg formation_weight)"/>
+        <arg name="use_wall_collision_guard" value="$(arg use_wall_collision_guard)"/>
     </include>
 
     <include file="$(find ego_planner)/launch/formation_6uav_wall_member.launch">
@@ -140,6 +149,7 @@
         <arg name="safety_distance" value="$(arg safety_distance)"/>
         <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
         <arg name="formation_weight" value="$(arg formation_weight)"/>
+        <arg name="use_wall_collision_guard" value="$(arg use_wall_collision_guard)"/>
     </include>
 
     <include file="$(find ego_planner)/launch/formation_6uav_wall_member.launch">
@@ -160,6 +170,7 @@
         <arg name="safety_distance" value="$(arg safety_distance)"/>
         <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
         <arg name="formation_weight" value="$(arg formation_weight)"/>
+        <arg name="use_wall_collision_guard" value="$(arg use_wall_collision_guard)"/>
     </include>
 
     <include if="$(arg rviz)" file="$(find ego_planner)/launch/rviz.launch"/>

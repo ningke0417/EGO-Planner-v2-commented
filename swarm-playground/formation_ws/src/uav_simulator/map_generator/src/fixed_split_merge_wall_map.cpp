@@ -1,5 +1,6 @@
 #include <cmath>
 #include <cstdint>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -41,9 +42,9 @@ void appendBox(const Box& box, double ground_z, double height,
 }
 
 visualization_msgs::Marker makeMarker(
-    const Box& box, double ground_z, double height, double inflation,
+    const Box& box, double ground_z, double height,
     const std::string& frame_id, const ros::Time& stamp,
-    const std::string& marker_namespace, int id, bool guard) {
+    const std::string& marker_namespace, int id) {
   visualization_msgs::Marker marker;
   marker.header.frame_id = frame_id;
   marker.header.stamp = stamp;
@@ -55,20 +56,13 @@ visualization_msgs::Marker makeMarker(
   marker.pose.position.y = box.center_y;
   marker.pose.position.z = 0.5 * (ground_z + height);
   marker.pose.orientation.w = 1.0;
-  marker.scale.x = box.size_x + (guard ? 2.0 * inflation : 0.0);
-  marker.scale.y = box.size_y + (guard ? 2.0 * inflation : 0.0);
-  marker.scale.z = height - ground_z + (guard ? 0.02 : 0.0);
-  if (guard) {
-    marker.color.r = 1.0;
-    marker.color.g = 0.75;
-    marker.color.b = 0.0;
-    marker.color.a = 0.12;
-  } else {
-    marker.color.r = 0.45;
-    marker.color.g = 0.45;
-    marker.color.b = 0.50;
-    marker.color.a = 0.18;
-  }
+  marker.scale.x = box.size_x;
+  marker.scale.y = box.size_y;
+  marker.scale.z = height - ground_z;
+  marker.color.r = 0.45;
+  marker.color.g = 0.45;
+  marker.color.b = 0.50;
+  marker.color.a = 0.18;
   return marker;
 }
 
@@ -92,6 +86,8 @@ int main(int argc, char** argv) {
   double ground_z = -0.1;
   double height = 3.0;
   double safety_distance = 0.0;
+  bool randomize = false;
+  int random_seed = 1;
   std::string frame_id = "world";
 
   private_nh.param("first_wall_x", first_x, first_x);
@@ -109,7 +105,22 @@ int main(int argc, char** argv) {
   private_nh.param("ground_z", ground_z, ground_z);
   private_nh.param("height", height, height);
   private_nh.param("safety_distance", safety_distance, safety_distance);
+  private_nh.param("randomize", randomize, randomize);
+  private_nh.param("random_seed", random_seed, random_seed);
   private_nh.param<std::string>("frame_id", frame_id, frame_id);
+
+  if (randomize) {
+    std::mt19937 generator(static_cast<std::mt19937::result_type>(random_seed));
+    first_x = std::uniform_real_distribution<double>(-3.0, -1.0)(generator);
+    first_y = std::uniform_real_distribution<double>(-0.5, 0.5)(generator);
+    first_size_x = std::uniform_real_distribution<double>(0.4, 0.8)(generator);
+    first_size_y = std::uniform_real_distribution<double>(3.0, 4.5)(generator);
+    second_x = std::uniform_real_distribution<double>(4.5, 6.5)(generator);
+    second_y = std::uniform_real_distribution<double>(-0.4, 0.4)(generator);
+    second_size_x = std::uniform_real_distribution<double>(0.4, 0.8)(generator);
+    second_gap_size_y =
+        std::uniform_real_distribution<double>(2.0, 2.8)(generator);
+  }
 
   if (first_size_x <= 0.0 || first_size_y <= 0.0 ||
       second_size_x <= 0.0 || second_total_size_y <= 0.0 ||
@@ -153,18 +164,15 @@ int main(int argc, char** argv) {
   visualization_msgs::MarkerArray geometry;
   for (std::size_t i = 0; i < boxes.size(); ++i) {
     geometry.markers.push_back(makeMarker(
-        boxes[i], ground_z, height, safety_distance, frame_id,
+        boxes[i], ground_z, height, frame_id,
         message.header.stamp, "physical_split_merge_walls",
-        static_cast<int>(i), false));
-    geometry.markers.push_back(makeMarker(
-        boxes[i], ground_z, height, safety_distance, frame_id,
-        message.header.stamp, "inflated_split_merge_wall_guards",
-        static_cast<int>(i), true));
+        static_cast<int>(i)));
   }
   geometry_publisher.publish(geometry);
 
   ROS_INFO_STREAM(
-      "[split_merge_wall_geometry] first_center=(" << first_x << ","
+      "[split_merge_wall_geometry] randomize=" << (randomize ? "true" : "false")
+      << " seed=" << random_seed << " first_center=(" << first_x << ","
       << first_y << ") first_size=(" << first_size_x << ","
       << first_size_y << ") second_x=" << second_x
       << " second_total_y=" << second_total_size_y

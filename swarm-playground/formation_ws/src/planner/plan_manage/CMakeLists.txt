@@ -88,6 +88,13 @@ target_link_libraries(starconvex_shadow_6uav_node
   ${PCL_LIBRARIES}
 )
 
+add_executable(swarm_observed_map_6uav_node
+  src/swarm_observed_map_6uav_node.cpp)
+target_link_libraries(swarm_observed_map_6uav_node
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
+)
+
 add_executable(formation_backend_visualizer_4uav_node
   src/formation_backend_visualizer_4uav_node.cpp)
 target_link_libraries(formation_backend_visualizer_4uav_node
@@ -130,9 +137,30 @@ target_link_libraries(formation_auto_split_bridge_6uav_node
 add_dependencies(formation_auto_split_bridge_6uav_node
   ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_tristate_voxel_field
+    test/test_tristate_voxel_field.cpp)
+  if(TARGET test_tristate_voxel_field)
+    target_link_libraries(test_tristate_voxel_field
+      ${catkin_LIBRARIES}
+      ${PCL_LIBRARIES}
+    )
+  endif()
+endif()
+
 add_executable(subgroup_route_intent_4uav_node
   src/subgroup_route_intent_4uav_node.cpp)
 target_link_libraries(subgroup_route_intent_4uav_node
+  ${STARCONVEX_ROOT}/devel/lib/libstar_cvx.a
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
+)
+
+add_executable(subgroup_route_intent_6uav_node
+  src/subgroup_route_intent_4uav_node.cpp)
+target_compile_definitions(subgroup_route_intent_6uav_node PRIVATE
+  ROUTE_INTENT_UAV_COUNT=6)
+target_link_libraries(subgroup_route_intent_6uav_node
   ${STARCONVEX_ROOT}/devel/lib/libstar_cvx.a
   ${catkin_LIBRARIES}
   ${PCL_LIBRARIES}

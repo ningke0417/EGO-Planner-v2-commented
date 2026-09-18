@@ -1,0 +1,85 @@
+<launch>
+    <!-- Fixed-topology control group for formation_6uav_sparse_random.launch.
+         It uses the identical seeded obstacle generator, initial formation,
+         goal, dynamics and planner weights, but starts no split/merge nodes. -->
+    <arg name="rviz" default="true"/>
+    <arg name="random_seed" default="17"/>
+    <arg name="max_vel" default="0.5"/>
+    <arg name="map_size_x" default="32.0"/>
+    <arg name="map_size_y" default="14.0"/>
+    <arg name="map_size_z" default="3.0"/>
+    <arg name="start_x" default="-14.0"/>
+    <arg name="goal_x" default="14.0"/>
+    <arg name="formation_weight" default="200"/>
+    <arg name="large_obstacle_count" default="4"/>
+    <arg name="small_obstacle_count" default="6"/>
+    <arg name="endpoint_clearance" default="3.0"/>
+    <arg name="obstacle_separation" default="0.7"/>
+    <arg name="goal_side_obstacle_size_y" default="4.0"/>
+    <arg name="goal_side_obstacle_center_y" default="0.0"/>
+    <arg name="large_longitudinal_separation" default="3.5"/>
+    <arg name="small_center_y_limit" default="2.0"/>
+    <arg name="structured_challenge_enabled" default="true"/>
+    <arg name="stacked_cluster_x" default="-2.0"/>
+    <arg name="narrow_gap_x" default="4.8"/>
+    <arg name="narrow_gap_size_y" default="1.6"/>
+
+    <node pkg="map_generator" type="sparse_random_obstacle_map"
+          name="sparse_random_obstacle_map" output="screen" required="true">
+        <remap from="global_cloud" to="/map_generator/global_cloud"/>
+        <param name="seed" value="$(arg random_seed)" type="int"/>
+        <param name="large_obstacle_count" value="$(arg large_obstacle_count)" type="int"/>
+        <param name="small_obstacle_count" value="$(arg small_obstacle_count)" type="int"/>
+        <param name="map_size_y" value="$(arg map_size_y)" type="double"/>
+        <param name="start_x" value="$(arg start_x)" type="double"/>
+        <param name="goal_x" value="$(arg goal_x)" type="double"/>
+        <param name="endpoint_clearance" value="$(arg endpoint_clearance)" type="double"/>
+        <param name="boundary_clearance" value="0.8" type="double"/>
+        <param name="obstacle_separation" value="$(arg obstacle_separation)" type="double"/>
+        <param name="large_longitudinal_separation" value="$(arg large_longitudinal_separation)" type="double"/>
+        <param name="small_center_y_limit" value="$(arg small_center_y_limit)" type="double"/>
+        <param name="structured_challenge_enabled" value="$(arg structured_challenge_enabled)" type="bool"/>
+        <param name="stacked_cluster_x" value="$(arg stacked_cluster_x)" type="double"/>
+        <param name="stacked_cluster_y" value="-0.3" type="double"/>
+        <param name="stacked_block_size" value="1.2" type="double"/>
+        <param name="stacked_block_step" value="0.75" type="double"/>
+        <param name="narrow_gap_x" value="$(arg narrow_gap_x)" type="double"/>
+        <param name="narrow_gap_size_y" value="$(arg narrow_gap_size_y)" type="double"/>
+        <param name="narrow_gap_wall_size_x" value="0.8" type="double"/>
+        <param name="narrow_gap_segment_size_y" value="4.6" type="double"/>
+        <param name="large_size_x_min" value="0.6" type="double"/>
+        <param name="large_size_x_max" value="1.2" type="double"/>
+        <param name="large_size_y_min" value="2.5" type="double"/>
+        <param name="large_size_y_max" value="4.5" type="double"/>
+        <param name="goal_side_large_size_y_max" value="$(arg goal_side_obstacle_size_y)" type="double"/>
+        <param name="center_goal_side_large" value="true" type="bool"/>
+        <param name="goal_side_large_center_y" value="$(arg goal_side_obstacle_center_y)" type="double"/>
+        <param name="small_size_min" value="0.45" type="double"/>
+        <param name="small_size_max" value="0.9" type="double"/>
+        <param name="resolution" value="0.1" type="double"/>
+        <param name="height" value="$(arg map_size_z)" type="double"/>
+    </node>
+
+    <!-- Fixed topology cannot recover by splitting when a turning vehicle
+         exposes a wall behind its original camera direction.  Enable full
+         horizontal sensing only for this control group. -->
+    <param name="/drone_0_pcl_render_node/full_360_sensing" value="true" type="bool"/>
+    <param name="/drone_1_pcl_render_node/full_360_sensing" value="true" type="bool"/>
+    <param name="/drone_2_pcl_render_node/full_360_sensing" value="true" type="bool"/>
+    <param name="/drone_3_pcl_render_node/full_360_sensing" value="true" type="bool"/>
+    <param name="/drone_4_pcl_render_node/full_360_sensing" value="true" type="bool"/>
+    <param name="/drone_5_pcl_render_node/full_360_sensing" value="true" type="bool"/>
+
+    <include file="$(find ego_planner)/launch/formation_6uav_no_split_wall.launch">
+        <arg name="map_source" value="external"/>
+        <arg name="use_wall_collision_guard" value="true"/>
+        <arg name="rviz" value="$(arg rviz)"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+        <arg name="map_size_x" value="$(arg map_size_x)"/>
+        <arg name="map_size_y" value="$(arg map_size_y)"/>
+        <arg name="map_size_z" value="$(arg map_size_z)"/>
+        <arg name="start_x" value="$(arg start_x)"/>
+        <arg name="goal_x" value="$(arg goal_x)"/>
+        <arg name="formation_weight" value="$(arg formation_weight)"/>
+    </include>
+</launch>

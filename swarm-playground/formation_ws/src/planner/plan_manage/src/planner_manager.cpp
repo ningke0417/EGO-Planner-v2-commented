@@ -1,5 +1,6 @@
 // #include <fstream>
 #include <cmath>
+#include <limits>
 #include <plan_manage/planner_manager.h>
 #include <thread>
 #include "visualization_msgs/Marker.h" // zx-todo
@@ -535,6 +536,225 @@ namespace ego_planner
              stop_pos.x(), stop_pos.y(), stop_pos.z());
 
     return true;
+  }
+
+  bool EGOPlannerManager::findNearestCollisionFreePosition(
+      const Eigen::Vector3d &position,
+      Eigen::Vector3d &free_position) const
+  {
+    if (!grid_map_ || !position.allFinite())
+      return false;
+
+    Eigen::Vector3i origin_index;
+    grid_map_->posToIndex(position, origin_index);
+    if (!grid_map_->isInMap(origin_index))
+      return false;
+
+    // Search only in the horizontal plane. The random-scene walls span the
+    // flight height, so a vertical recovery would be an unintended bypass.
+    const int max_steps = std::max(
+        1, static_cast<int>(std::ceil(2.0 / grid_map_->getResolution())));
+    // Prefer a target with two extra free rings around it.  Merely choosing
+    // the first non-inflated voxel can produce a few-centimetre escape that is
+    // immediately classified occupied again because of tracking/map jitter.
+    for (int clearance_steps = 2; clearance_steps >= 0; --clearance_steps)
+    {
+      for (int radius = 1; radius <= max_steps; ++radius)
+      {
+        bool found = false;
+        double best_distance = std::numeric_limits<double>::infinity();
+        Eigen::Vector3d best_candidate;
+        for (int dx = -radius; dx <= radius; ++dx)
+        {
+          for (int dy = -radius; dy <= radius; ++dy)
+          {
+            if (std::max(std::abs(dx), std::abs(dy)) != radius)
+              continue;
+
+            const Eigen::Vector3i candidate_index =
+                origin_index + Eigen::Vector3i(dx, dy, 0);
+            bool clearance_is_free = true;
+            for (int cx = -clearance_steps;
+                 cx <= clearance_steps && clearance_is_free; ++cx)
+            {
+              for (int cy = -clearance_steps; cy <= clearance_steps; ++cy)
+              {
+                const Eigen::Vector3i clearance_index =
+                    candidate_index + Eigen::Vector3i(cx, cy, 0);
+                if (!grid_map_->isInMap(clearance_index) ||
+                    grid_map_->getInflateOccupancyByIndex(clearance_index) != 0)
+                {
+                  clearance_is_free = false;
+                  break;
+                }
+              }
+            }
+            if (!clearance_is_free)
+              continue;
+
+            Eigen::Vector3d candidate;
+            grid_map_->indexToPos(candidate_index, candidate);
+            candidate.z() = position.z();
+            const double distance = (candidate - position).squaredNorm();
+            if (distance < best_distance)
+            {
+              found = true;
+              best_distance = distance;
+              best_candidate = candidate;
+            }
+          }
+        }
+        if (found)
+        {
+          free_position = best_candidate;
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  bool EGOPlannerManager::EmergencyEscape(
+      const Eigen::Vector3d &start_pos,
+      const Eigen::Vector3d &free_pos)
+  {
+    if (!start_pos.allFinite() || !free_pos.allFinite() || !grid_map_ ||
+        grid_map_->getInflateOccupancy(free_pos) != 0)
+      return false;
+
+    const double distance = (free_pos - start_pos).norm();
+    if (distance < 1e-3)
+      return EmergencyStop(start_pos);
+
+    const Eigen::Vector3d zero = Eigen::Vector3d::Zero();
+    Eigen::Matrix<double, 3, 3> head_state, tail_state;
+    head_state << start_pos, zero, zero;
+    tail_state << free_pos, zero, zero;
+
+    poly_traj::MinJerkOpt escape_mjo;
+    escape_mjo.reset(head_state, tail_state, 2);
+    Eigen::Matrix<double, 3, 1> midpoint;
+    midpoint.col(0) = 0.5 * (start_pos + free_pos);
+    const double duration = std::max(1.0, distance / 0.25);
+    escape_mjo.generate(
+        midpoint, Eigen::Vector2d(duration * 0.5, duration * 0.5));
+
+    poly_traj::Trajectory escape_traj = escape_mjo.getTraj();
+    Eigen::MatrixXd cps =
+        escape_mjo.getInitConstraintPoints(getCpsNumPrePiece());
+    const int checked_point_count = std::max(
+        1, ConstraintPoints::two_thirds_id(cps, false));
+    PtsChk_t escape_points(checked_point_count);
+    for (int index = 0; index < checked_point_count; ++index)
+    {
+      const double sample_time =
+          escape_traj.getTotalDuration() * static_cast<double>(index + 1) /
+          static_cast<double>(checked_point_count);
+      escape_points[index].emplace_back(
+          sample_time, escape_traj.getPos(sample_time));
+    }
+    traj_.setLocalTraj(escape_traj, escape_points, ros::Time::now().toSec());
+
+    ROS_ERROR("[drone %d] Installed collision-recovery trajectory id=%d from "
+              "(%.3f, %.3f, %.3f) to nearest collision-free voxel "
+              "(%.3f, %.3f, %.3f).",
+              pp_.drone_id, traj_.local_traj.traj_id,
+              start_pos.x(), start_pos.y(), start_pos.z(),
+              free_pos.x(), free_pos.y(), free_pos.z());
+    return true;
+  }
+
+  bool EGOPlannerManager::findDirectionalCollisionFreePosition(
+      const Eigen::Vector3d &position,
+      const Eigen::Vector3d &preferred_direction,
+      const double minimum_displacement,
+      Eigen::Vector3d &free_position) const
+  {
+    if (!grid_map_ || !position.allFinite() ||
+        !preferred_direction.allFinite())
+      return false;
+
+    Eigen::Vector3d direction = preferred_direction;
+    direction.z() = 0.0;
+    if (direction.norm() < 1e-3)
+      direction = Eigen::Vector3d::UnitY();
+    else
+      direction.normalize();
+
+    Eigen::Vector3i origin_index;
+    grid_map_->posToIndex(position, origin_index);
+    if (!grid_map_->isInMap(origin_index))
+      return false;
+
+    const double resolution = grid_map_->getResolution();
+    const int min_steps = std::max(
+        1, static_cast<int>(std::ceil(minimum_displacement / resolution)));
+    const int max_steps = std::max(
+        min_steps, static_cast<int>(std::ceil(1.5 / resolution)));
+
+    // Search short moves first.  A candidate must point at least 60 degrees
+    // away from the peer and retain two additional free voxel rings.
+    for (int radius = min_steps; radius <= max_steps; ++radius)
+    {
+      bool found = false;
+      double best_alignment = -1.0;
+      Eigen::Vector3d best_candidate;
+      for (int dx = -radius; dx <= radius; ++dx)
+      {
+        for (int dy = -radius; dy <= radius; ++dy)
+        {
+          if (std::max(std::abs(dx), std::abs(dy)) != radius)
+            continue;
+
+          const Eigen::Vector3d grid_direction(
+              static_cast<double>(dx), static_cast<double>(dy), 0.0);
+          const double alignment = grid_direction.normalized().dot(direction);
+          if (alignment < 0.5)
+            continue;
+
+          const Eigen::Vector3i candidate_index =
+              origin_index + Eigen::Vector3i(dx, dy, 0);
+          bool clearance_is_free = true;
+          for (int cx = -2; cx <= 2 && clearance_is_free; ++cx)
+          {
+            for (int cy = -2; cy <= 2; ++cy)
+            {
+              const Eigen::Vector3i clearance_index =
+                  candidate_index + Eigen::Vector3i(cx, cy, 0);
+              if (!grid_map_->isInMap(clearance_index) ||
+                  grid_map_->getInflateOccupancyByIndex(clearance_index) != 0)
+              {
+                clearance_is_free = false;
+                break;
+              }
+            }
+          }
+          if (!clearance_is_free)
+            continue;
+
+          Eigen::Vector3d candidate;
+          grid_map_->indexToPos(candidate_index, candidate);
+          candidate.z() = position.z();
+          if (segmentViolatesWallCollisionGuard(position, candidate))
+            continue;
+
+          if (!found || alignment > best_alignment)
+          {
+            found = true;
+            best_alignment = alignment;
+            best_candidate = candidate;
+          }
+        }
+      }
+      if (found)
+      {
+        free_position = best_candidate;
+        return true;
+      }
+    }
+
+    return false;
   }
 
   bool EGOPlannerManager::checkCollision(int drone_id)

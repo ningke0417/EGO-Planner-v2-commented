@@ -219,14 +219,84 @@ struct VoxelIndexHash {
   }
 };
 
-// Immutable occupancy field built from the same global point cloud consumed by
-// the planners. Inflation is performed once when the latched map arrives.
+// Immutable voxel field.  The legacy constructor models occupied/not-occupied;
+// the overload additionally preserves observed-free voxels so callers can
+// distinguish unknown space from certified free space.
 class VoxelObstacleField {
  public:
   VoxelObstacleField(const pcl::PointCloud<pcl::PointXYZ>& cloud,
                      double resolution, double inflation)
       : resolution_(resolution) {
-    if (resolution <= 0.0 || inflation < 0.0)
+    initializeOccupied(cloud, inflation, true);
+  }
+
+  VoxelObstacleField(const pcl::PointCloud<pcl::PointXYZ>& occupied_cloud,
+                     const pcl::PointCloud<pcl::PointXYZ>& known_free_cloud,
+                     double resolution, double inflation)
+      : resolution_(resolution), has_known_free_layer_(true) {
+    initializeOccupied(occupied_cloud, inflation, false);
+    for (const auto& point : known_free_cloud.points) {
+      if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+          !std::isfinite(point.z))
+        continue;
+      const VoxelIndex index = indexOf({point.x, point.y, point.z});
+      if (occupied_.count(index) == 0) known_free_.insert(index);
+    }
+    if (known_free_.empty() && occupied_.empty())
+      throw std::runtime_error("tri-state voxel field is empty");
+  }
+
+  bool occupied(const Vec3& point) const {
+    return occupied_.count(indexOf(point)) != 0;
+  }
+
+  bool knownFree(const Vec3& point) const {
+    if (!has_known_free_layer_) return !occupied(point);
+    return known_free_.count(indexOf(point)) != 0;
+  }
+
+  bool hasKnownFreeLayer() const { return has_known_free_layer_; }
+
+  Vec3 firstUnsafe(const Vec3& origin, const Vec3& endpoint,
+                   double step) const {
+    if (!has_known_free_layer_) return firstHit(origin, endpoint, step);
+    if (step <= 0.0) throw std::runtime_error("ray step must be positive");
+    if (!knownFree(origin)) return origin;
+    const Vec3 delta = subtract(endpoint, origin);
+    const double length = norm(delta);
+    if (length < 1e-12) return endpoint;
+    const int samples = std::max(1, static_cast<int>(std::ceil(length / step)));
+    for (int sample = 1; sample <= samples; ++sample) {
+      const double ratio = std::min(1.0, sample * step / length);
+      const Vec3 point = add(origin, scale(delta, ratio));
+      if (!knownFree(point)) return point;
+    }
+    return endpoint;
+  }
+
+  Vec3 firstHit(const Vec3& origin, const Vec3& endpoint,
+                double step) const {
+    if (step <= 0.0) throw std::runtime_error("ray step must be positive");
+    if (occupied(origin)) return origin;
+    const Vec3 delta = subtract(endpoint, origin);
+    const double length = norm(delta);
+    if (length < 1e-12) return endpoint;
+    const int samples = std::max(1, static_cast<int>(std::ceil(length / step)));
+    for (int sample = 1; sample <= samples; ++sample) {
+      const double ratio = std::min(1.0, sample * step / length);
+      const Vec3 point = add(origin, scale(delta, ratio));
+      if (occupied(point)) return point;
+    }
+    return endpoint;
+  }
+
+  std::size_t occupiedVoxelCount() const { return occupied_.size(); }
+  std::size_t knownFreeVoxelCount() const { return known_free_.size(); }
+
+ private:
+  void initializeOccupied(const pcl::PointCloud<pcl::PointXYZ>& cloud,
+                          double inflation, bool require_nonempty) {
+    if (resolution_ <= 0.0 || inflation < 0.0)
       throw std::runtime_error("invalid voxel obstacle field parameters");
 
     std::unordered_set<VoxelIndex, VoxelIndexHash> raw;
@@ -236,7 +306,8 @@ class VoxelObstacleField {
         continue;
       raw.insert(indexOf({point.x, point.y, point.z}));
     }
-    if (raw.empty()) throw std::runtime_error("point-cloud obstacle field is empty");
+    if (require_nonempty && raw.empty())
+      throw std::runtime_error("point-cloud obstacle field is empty");
 
     const int radius = static_cast<int>(std::ceil(inflation / resolution_));
     std::vector<VoxelIndex> offsets;
@@ -258,31 +329,9 @@ class VoxelObstacleField {
             {index.x + offset.x, index.y + offset.y, index.z + offset.z});
       }
     }
+    for (const auto& index : occupied_) known_free_.erase(index);
   }
 
-  bool occupied(const Vec3& point) const {
-    return occupied_.count(indexOf(point)) != 0;
-  }
-
-  Vec3 firstHit(const Vec3& origin, const Vec3& endpoint,
-                double step) const {
-    if (step <= 0.0) throw std::runtime_error("ray step must be positive");
-    if (occupied(origin)) return origin;
-    const Vec3 delta = subtract(endpoint, origin);
-    const double length = norm(delta);
-    if (length < 1e-12) return endpoint;
-    const int samples = std::max(1, static_cast<int>(std::ceil(length / step)));
-    for (int sample = 1; sample <= samples; ++sample) {
-      const double ratio = std::min(1.0, sample * step / length);
-      const Vec3 point = add(origin, scale(delta, ratio));
-      if (occupied(point)) return point;
-    }
-    return endpoint;
-  }
-
-  std::size_t occupiedVoxelCount() const { return occupied_.size(); }
-
- private:
   VoxelIndex indexOf(const Vec3& point) const {
     return {static_cast<std::int64_t>(std::llround(point.x / resolution_)),
             static_cast<std::int64_t>(std::llround(point.y / resolution_)),
@@ -291,6 +340,8 @@ class VoxelObstacleField {
 
   double resolution_ = 0.1;
   std::unordered_set<VoxelIndex, VoxelIndexHash> occupied_;
+  std::unordered_set<VoxelIndex, VoxelIndexHash> known_free_;
+  bool has_known_free_layer_ = false;
 };
 
 using RaycastFunction = std::function<Vec3(const Vec3&, const Vec3&)>;
@@ -338,7 +389,7 @@ inline pcl::PointCloud<pcl::PointXYZ>::Ptr generateBoundaryCloud(
     const GeometryOptions& options) {
   const RaycastFunction raycast = [&field, &options](const Vec3& origin,
                                                      const Vec3& endpoint) {
-    return field.firstHit(origin, endpoint, options.raycast_resolution);
+    return field.firstUnsafe(origin, endpoint, options.raycast_resolution);
   };
   std::vector<Vec3> boundary;
   std::vector<std::size_t> before_size{0};

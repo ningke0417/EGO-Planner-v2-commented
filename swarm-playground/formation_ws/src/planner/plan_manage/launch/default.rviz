@@ -250,7 +250,7 @@ Visualization Manager:
       Marker Topic: /starconvex_shadow_6uav/markers
       Name: six_uav_starconvex_criterion
       Namespaces:
-        six_uav_criterion_state: true
+        {}
       Queue Size: 10
       Value: true
     - Class: rviz/MarkerArray
@@ -283,10 +283,9 @@ Visualization Manager:
     - Class: rviz/MarkerArray
       Enabled: true
       Marker Topic: /map_generator/wall_geometry
-      Name: wall_and_guard_geometry
+      Name: wall_geometry
       Namespaces:
-        inflated_split_merge_wall_guards: true
-        physical_split_merge_walls: true
+        {}
       Queue Size: 2
       Value: true
     - Alpha: 1
@@ -5771,7 +5770,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/ThirdPersonFollower
-      Distance: 38.85212707519531
+      Distance: 40.47028732299805
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -5779,8 +5778,8 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: -4.252175331115723
-        Y: -2.394653558731079
+        X: -9.685125350952148
+        Y: -1.6107563972473145
         Z: -11.999991416931152
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806

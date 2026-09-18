@@ -1,6 +1,8 @@
 
 #include <plan_manage/ego_replan_fsm.h>
 
+#include <limits>
+
 namespace ego_planner
 {
 
@@ -11,6 +13,7 @@ namespace ego_planner
     have_odom_ = false;
     have_recv_pre_agent_ = false;
     flag_escape_emergency_ = true;
+    collision_recovery_active_ = false;
     mandatory_stop_ = false;
 
     /* initialize main modules */
@@ -33,6 +36,9 @@ namespace ego_planner
              general_dynamic_topology_enabled_, false);
     nh.param("formation/subgroup_route_intent_feedback_enabled",
              subgroup_route_intent_feedback_enabled_, false);
+    nh.param<std::string>("formation/subgroup_route_intent_topic",
+                          subgroup_route_intent_topic_,
+                          "/subgroup_route_intent_4uav/intents");
     nh.param("formation/initial_assignment_enabled",
              initial_assignment_enabled_, false);
     nh.param("formation/subgroup_route_intent_timeout",
@@ -128,7 +134,7 @@ namespace ego_planner
       initial_assignment_received_ = true;
     if (subgroup_route_intent_feedback_enabled_)
       subgroup_route_intent_sub_ = nh.subscribe<std_msgs::Float64MultiArray>(
-          "/subgroup_route_intent_4uav/intents", 1,
+          subgroup_route_intent_topic_, 1,
           &EGOReplanFSM::subgroupRouteIntentCallback, this);
 
     /* Use MINCO trajectory to minimize the message size in wireless communication */
@@ -300,15 +306,6 @@ namespace ego_planner
     if (components_merged && have_odom_)
       planner_manager_->beginMergeSynchronization(odom_pos_);
     publishFormationGroupState();
-
-    if (!dynamicTopologyMatchesLegacySplit() && subgroup_route_intent_active_)
-    {
-      subgroup_route_intent_active_ = false;
-      subgroup_route_intent_gain_ = 0.0;
-      planner_manager_->setSubgroupRouteIntent(
-          false, odom_pos_, Eigen::Vector3d::UnitX(), 0.0);
-      publishSubgroupRouteIntentState("DISABLED_DYNAMIC_TOPOLOGY");
-    }
 
     ROS_WARN("[FORMATION_BACKEND] drone %d uses legacy dynamic topology %s as C%d",
              planner_manager_->pp_.drone_id, canonicalTopology(groups).c_str(),
@@ -572,15 +569,13 @@ namespace ego_planner
     if (components_merged && have_odom_)
       planner_manager_->beginMergeSynchronization(odom_pos_);
 
-    if ((!manual_formation_split_ || !dynamicTopologyMatchesLegacySplit()) &&
-        subgroup_route_intent_active_)
+    if (!manual_formation_split_ && subgroup_route_intent_active_)
     {
       subgroup_route_intent_active_ = false;
       subgroup_route_intent_gain_ = 0.0;
       planner_manager_->setSubgroupRouteIntent(
           false, odom_pos_, Eigen::Vector3d::UnitX(), 0.0);
-      publishSubgroupRouteIntentState(
-          manual_formation_split_ ? "DISABLED_DYNAMIC_TOPOLOGY" : "WAITING_SPLIT");
+      publishSubgroupRouteIntentState("WAITING_SPLIT");
     }
 
     publishFormationGroupState();
@@ -1200,14 +1195,123 @@ namespace ego_planner
     {
       latchFirstWallViolation("current_odometry", current_map_occupancy,
                               info, t_cur);
-      if (exec_state_ != EMERGENCY_STOP)
+      if (!collision_recovery_active_)
       {
-        callEmergencyStop(odom_pos_);
+        Eigen::Vector3d recovery_target;
+        const bool recovery_installed =
+            planner_manager_->findNearestCollisionFreePosition(
+                odom_pos_, recovery_target) &&
+            callEmergencyEscape(odom_pos_, recovery_target);
+        if (!recovery_installed)
+          callEmergencyStop(odom_pos_);
+
+        // Preserve the escape command. Otherwise the EMERGENCY_STOP state's
+        // next tick would replace it with a stationary trajectory.
+        if (recovery_installed)
+        {
+          flag_escape_emergency_ = false;
+          collision_recovery_active_ = true;
+          fail_safe_before_collision_recovery_ = enable_fail_safe_;
+          collision_recovery_target_ = recovery_target;
+        }
         enable_fail_safe_ = false;
         changeFSMExecState(EMERGENCY_STOP,
-                           "SAFETY_CURRENT_WALL_GUARD");
+                           recovery_installed
+                               ? "SAFETY_COLLISION_RECOVERY"
+                               : "SAFETY_CURRENT_WALL_GUARD");
       }
       return;
+    }
+
+    if (collision_recovery_active_)
+    {
+      // Leaving the inflated cell is not enough: allow the escape trajectory
+      // to settle at its buffered endpoint before returning to normal
+      // planning.  Otherwise the normal planner can overwrite it mid-escape.
+      const bool recovery_finished =
+          t_cur >= info->duration - 0.05 && odom_vel_.norm() < 0.15 &&
+          (odom_pos_ - collision_recovery_target_).norm() < 0.15;
+      if (recovery_finished)
+      {
+        collision_recovery_active_ = false;
+        enable_fail_safe_ = fail_safe_before_collision_recovery_;
+        flag_escape_emergency_ = true;
+        ROS_WARN("[drone %d] Collision recovery complete; resuming planning.",
+                 planner_manager_->pp_.drone_id);
+        changeFSMExecState(GEN_NEW_TRAJ,
+                           "SAFETY_COLLISION_RECOVERY_COMPLETE");
+      }
+      return;
+    }
+
+    // Break symmetric swarm deadlocks deterministically.  When two stopped
+    // agents are already inside the safety radius, only the higher-id agent
+    // performs a short obstacle-aware move away from the lower-id agent.  The
+    // lower-id agent keeps priority, so both sides cannot choose mirrored
+    // avoidance manoeuvres and block each other indefinitely.
+    int closest_peer_id = -1;
+    double closest_peer_distance = std::numeric_limits<double>::infinity();
+    Eigen::Vector3d closest_peer_position;
+    const double now = ros::Time::now().toSec();
+    const double deadlock_distance =
+        0.8 * planner_manager_->getSwarmClearance();
+    const bool locally_stopped =
+        have_target_ && odom_vel_.norm() < 0.15 &&
+        exec_state_ != INIT && exec_state_ != WAIT_TARGET;
+    for (size_t id = 0;
+         locally_stopped &&
+         id < planner_manager_->traj_.swarm_traj.size(); ++id)
+    {
+      const auto &peer = planner_manager_->traj_.swarm_traj[id];
+      if (peer.drone_id != static_cast<int>(id) ||
+          peer.drone_id == planner_manager_->pp_.drone_id ||
+          peer.start_time < 1e9 || peer.duration <= 0.0)
+        continue;
+
+      const double peer_time =
+          std::max(0.0, std::min(peer.duration, now - peer.start_time));
+      const Eigen::Vector3d peer_position = peer.traj.getPos(peer_time);
+      const Eigen::Vector3d peer_velocity = peer.traj.getVel(peer_time);
+      const double distance = (odom_pos_ - peer_position).norm();
+      if (peer_velocity.norm() < 0.15 && distance < deadlock_distance &&
+          distance < closest_peer_distance)
+      {
+        closest_peer_id = static_cast<int>(id);
+        closest_peer_distance = distance;
+        closest_peer_position = peer_position;
+      }
+    }
+
+    if (closest_peer_id >= 0 &&
+        planner_manager_->pp_.drone_id > closest_peer_id)
+    {
+      const Eigen::Vector3d away_direction =
+          odom_pos_ - closest_peer_position;
+      const double separation_distance = std::max(
+          0.6, planner_manager_->getSwarmClearance() -
+                   closest_peer_distance + 0.30);
+      Eigen::Vector3d recovery_target;
+      const bool recovery_installed =
+          planner_manager_->findDirectionalCollisionFreePosition(
+              odom_pos_, away_direction, separation_distance,
+              recovery_target) &&
+          callEmergencyEscape(odom_pos_, recovery_target);
+      if (recovery_installed)
+      {
+        flag_escape_emergency_ = false;
+        collision_recovery_active_ = true;
+        fail_safe_before_collision_recovery_ = enable_fail_safe_;
+        collision_recovery_target_ = recovery_target;
+        enable_fail_safe_ = false;
+        ROS_WARN("[drone %d] Resolving swarm deadlock with lower-id drone %d; "
+                 "distance=%.3f, escape_target=(%.3f, %.3f, %.3f).",
+                 planner_manager_->pp_.drone_id, closest_peer_id,
+                 closest_peer_distance, recovery_target.x(),
+                 recovery_target.y(), recovery_target.z());
+        changeFSMExecState(EMERGENCY_STOP,
+                           "SAFETY_SWARM_DEADLOCK_RECOVERY");
+        return;
+      }
     }
 
     if (exec_state_ == WAIT_TARGET || info->traj_id <= 0)
@@ -1448,6 +1552,25 @@ namespace ego_planner
     poly_traj_pub_.publish(poly_msg);
     broadcast_ploytraj_pub_.publish(MINCO_msg);
 
+    return true;
+  }
+
+  bool EGOReplanFSM::callEmergencyEscape(
+      const Eigen::Vector3d &start_pos,
+      const Eigen::Vector3d &free_pos)
+  {
+    if (!planner_manager_->EmergencyEscape(start_pos, free_pos))
+    {
+      ROS_ERROR("[drone %d] Failed to install collision-recovery trajectory.",
+                planner_manager_->pp_.drone_id);
+      return false;
+    }
+
+    traj_utils::PolyTraj poly_msg;
+    traj_utils::MINCOTraj MINCO_msg;
+    polyTraj2ROSMsg(poly_msg, MINCO_msg);
+    poly_traj_pub_.publish(poly_msg);
+    broadcast_ploytraj_pub_.publish(MINCO_msg);
     return true;
   }
 

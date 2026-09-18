@@ -21,3 +21,7 @@ source /opt/ros/noetic/setup.zsh
 source swarm-playground/formation_ws/devel/setup.zsh
 
 roslaunch ego_planner formation_6uav_criterion_auto_split_wall.launch
+
+cd /home/robot/Codes/EGO-Planner-criterion-validation/swarm-playground/formation_ws
+source devel/setup.zsh
+roslaunch ego_planner formation_6uav_sparse_random.launch

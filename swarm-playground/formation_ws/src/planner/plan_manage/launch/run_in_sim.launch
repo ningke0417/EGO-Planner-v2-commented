@@ -30,6 +30,7 @@
     <arg name="merge_sync_backtrack_tolerance" default="0.03"/>
     <arg name="merge_sync_weight" default="1000.0"/>
     <arg name="subgroup_route_intent_feedback_enabled" default="false"/>
+    <arg name="subgroup_route_intent_topic" default="/subgroup_route_intent_4uav/intents"/>
     <arg name="subgroup_route_intent_weight" default="80.0"/>
     <arg name="subgroup_route_intent_corridor_half_width" default="0.25"/>
     <arg name="formation_weight" default="100"/>
@@ -88,6 +89,7 @@
         <arg name="merge_sync_backtrack_tolerance" value="$(arg merge_sync_backtrack_tolerance)"/>
         <arg name="merge_sync_weight" value="$(arg merge_sync_weight)"/>
         <arg name="subgroup_route_intent_feedback_enabled" value="$(arg subgroup_route_intent_feedback_enabled)"/>
+        <arg name="subgroup_route_intent_topic" value="$(arg subgroup_route_intent_topic)"/>
         <arg name="subgroup_route_intent_weight" value="$(arg subgroup_route_intent_weight)"/>
         <arg name="subgroup_route_intent_corridor_half_width" value="$(arg subgroup_route_intent_corridor_half_width)"/>
         <arg name="formation_weight" value="$(arg formation_weight)"/>

@@ -1,4 +1,6 @@
 #include <array>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -114,20 +116,46 @@ private:
     last_topology_epoch_ = message->epoch;
     last_topology_mode_ = message->mode;
 
+    if (message->mode == ego_planner::FormationTopologyCommand::INTACT)
+    {
+      if (split_cycle_active_)
+      {
+        reassignment_locked_for_split_cycle_ = true;
+        reassignment_pending_ = false;
+        ROS_INFO_STREAM("[FORMATION_ASSIGNMENT] split/merge cycle finalized by epoch="
+                        << message->epoch << " reason=" << message->reason);
+      }
+      return;
+    }
+
     if (message->mode == ego_planner::FormationTopologyCommand::SPLIT &&
         message->reason == "CRITERION_SPLIT" && was_intact)
     {
-      reassignment_done_for_split_cycle_ = false;
+      split_cycle_active_ = true;
+      reassignment_locked_for_split_cycle_ = false;
+      keep_assignment_published_for_split_cycle_ = false;
+      reassignment_pending_ = false;
       ROS_INFO("[FORMATION_ASSIGNMENT] new split/merge cycle detected");
     }
 
     if (!published_ || message->reason != "VISIBILITY_WEAK_RECONNECT")
+    {
+      if (message->reason != "WEAK_RECOVERY_RAMP_MID" &&
+          message->reason != "WEAK_RECOVERY_RAMP_FINAL")
+        reassignment_pending_ = false;
       return;
-    if (reassignment_done_for_split_cycle_)
+    }
+    if (!split_cycle_active_)
+    {
+      ROS_WARN_STREAM("[FORMATION_ASSIGNMENT] ignore weak reconnect epoch="
+                      << message->epoch << " without an active criterion split cycle");
+      return;
+    }
+    if (reassignment_locked_for_split_cycle_)
     {
       ROS_WARN_STREAM("[FORMATION_ASSIGNMENT] ignore repeated weak reconnect epoch="
                       << message->epoch
-                      << "; assignment already committed in this split cycle");
+                      << "; changed assignment already committed in this split cycle");
       return;
     }
     reassignment_pending_ = true;
@@ -135,6 +163,25 @@ private:
     last_evaluation_stamp_ = ros::Time();
     ROS_WARN_STREAM("[FORMATION_ASSIGNMENT] merge reassignment armed by topology epoch="
                     << message->epoch);
+  }
+
+  std::string matrixText(const Eigen::MatrixXd &matrix) const
+  {
+    std::ostringstream output;
+    output << std::fixed << std::setprecision(3) << "[";
+    for (int row = 0; row < matrix.rows(); ++row)
+    {
+      if (row) output << ";";
+      output << "[";
+      for (int column = 0; column < matrix.cols(); ++column)
+      {
+        if (column) output << ",";
+        output << matrix(row, column);
+      }
+      output << "]";
+    }
+    output << "]";
+    return output.str();
   }
 
   void evaluateReassignment(const ros::Time &now)
@@ -180,8 +227,10 @@ private:
       candidate_cost += raw_cost(id, candidate(id));
       changed = changed || candidate(id) != current_assignment_[id];
     }
-    if (!changed ||
-        candidate_cost > current_cost * (1.0 - minimum_improvement_ratio_))
+    const bool improvement_accepted =
+        changed &&
+        candidate_cost <= current_cost * (1.0 - minimum_improvement_ratio_);
+    if (!improvement_accepted)
     {
       changed = false;
       candidate.resize(kUavCount);
@@ -202,13 +251,30 @@ private:
                     << candidate.transpose() << "] stable=" << stable_count_
                     << "/" << reassignment_stable_count_
                     << " current_cost=" << current_cost
-                    << " candidate_cost=" << candidate_cost);
+                    << " candidate_cost=" << candidate_cost
+                    << " improvement_accepted="
+                    << (improvement_accepted ? "true" : "false")
+                    << " raw_cost=" << matrixText(raw_cost)
+                    << " assignment_cost=" << matrixText(assignment_cost));
     if (stable_count_ < reassignment_stable_count_)
       return;
 
-    publishAssignment(candidate, changed ? "MERGE_REASSIGN" : "MERGE_KEEP");
-    reassignment_pending_ = false;
-    reassignment_done_for_split_cycle_ = true;
+    if (changed)
+    {
+      publishAssignment(candidate, "MERGE_REASSIGN");
+      reassignment_pending_ = false;
+      reassignment_locked_for_split_cycle_ = true;
+      return;
+    }
+
+    // MERGE_KEEP is an acknowledgement for the bridge, not a terminal
+    // decision.  Keep evaluating while weak recovery is active so a later,
+    // genuinely shorter assignment can still be committed.
+    if (!keep_assignment_published_for_split_cycle_)
+    {
+      publishAssignment(candidate, "MERGE_KEEP");
+      keep_assignment_published_for_split_cycle_ = true;
+    }
   }
 
   void timerCallback(const ros::TimerEvent &)
@@ -276,7 +342,9 @@ private:
   uint8_t last_topology_mode_{ego_planner::FormationTopologyCommand::INTACT};
   int stable_count_{0};
   bool reassignment_pending_{false};
-  bool reassignment_done_for_split_cycle_{false};
+  bool split_cycle_active_{false};
+  bool reassignment_locked_for_split_cycle_{false};
+  bool keep_assignment_published_for_split_cycle_{false};
   bool published_{false};
 };
 

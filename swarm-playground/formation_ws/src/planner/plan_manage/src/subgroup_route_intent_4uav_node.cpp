@@ -11,6 +11,8 @@
 
 #include <geometry_msgs/Point.h>
 #include <nav_msgs/Odometry.h>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
@@ -28,7 +30,10 @@ using starconvex_adapter::VoxelObstacleField;
 using starconvex_adapter::norm;
 using starconvex_adapter::subtract;
 
-constexpr std::size_t kUavCount = 4;
+#ifndef ROUTE_INTENT_UAV_COUNT
+#define ROUTE_INTENT_UAV_COUNT 4
+#endif
+constexpr std::size_t kUavCount = ROUTE_INTENT_UAV_COUNT;
 constexpr std::size_t kGroupCount = 2;
 constexpr double kPi = 3.14159265358979323846;
 const std::array<std::array<int, 2>, kGroupCount> kGroupMembers{
@@ -104,6 +109,11 @@ class SubgroupRouteIntent {
     obstacle_subscriber_ = nh_.subscribe<sensor_msgs::PointCloud2>(
         obstacle_cloud_topic_, 1,
         &SubgroupRouteIntent::obstacleCallback, this);
+    if (kUavCount == 6) {
+      known_free_subscriber_ = nh_.subscribe<sensor_msgs::PointCloud2>(
+          known_free_cloud_topic_, 1,
+          &SubgroupRouteIntent::knownFreeCallback, this);
+    }
     intent_publisher_ = private_nh_.advertise<std_msgs::Float64MultiArray>(
         "intents", 1, true);
     summary_publisher_ =
@@ -114,7 +124,7 @@ class SubgroupRouteIntent {
     timer_ = nh_.createTimer(ros::Duration(1.0 / publish_rate_),
                              &SubgroupRouteIntent::timerCallback, this);
     ROS_INFO_STREAM(
-        "Four-UAV subgroup route-intent ready. mode="
+        kUavCount << "-UAV subgroup route-intent ready. mode="
         << (feedback_enabled_ ? "GUIDANCE_ENABLED" : "SHADOW_ONLY")
         << ", candidates=" << ray_count_ << ", goal=(" << goal_x_ << ","
         << goal_y_ << "), rate=" << publish_rate_ << " Hz");
@@ -128,6 +138,9 @@ class SubgroupRouteIntent {
     private_nh_.param<std::string>("obstacle_cloud_topic",
                                    obstacle_cloud_topic_,
                                    "/map_generator/global_cloud");
+    private_nh_.param<std::string>("known_free_cloud_topic",
+                                   known_free_cloud_topic_,
+                                   "/swarm/observed_free");
     private_nh_.param("voxel_resolution", voxel_resolution_, 0.10);
     private_nh_.param("obstacle_inflation", obstacle_inflation_, 0.35);
     private_nh_.param("odom_timeout", odom_timeout_, 2.0);
@@ -182,15 +195,33 @@ class SubgroupRouteIntent {
   }
 
   void obstacleCallback(const sensor_msgs::PointCloud2::ConstPtr& message) {
-    pcl::PointCloud<pcl::PointXYZ> cloud;
-    pcl::fromROSMsg(*message, cloud);
+    pcl::fromROSMsg(*message, latest_occupied_cloud_);
+    occupied_seen_ = true;
+    rebuildObstacleField();
+  }
+
+  void knownFreeCallback(const sensor_msgs::PointCloud2::ConstPtr& message) {
+    pcl::fromROSMsg(*message, latest_known_free_cloud_);
+    known_free_seen_ = true;
+    rebuildObstacleField();
+  }
+
+  void rebuildObstacleField() {
+    if (!occupied_seen_ || (kUavCount == 6 && !known_free_seen_)) return;
     try {
-      obstacle_field_.reset(new VoxelObstacleField(
-          cloud, voxel_resolution_, obstacle_inflation_));
+      if (kUavCount == 6) {
+        obstacle_field_.reset(new VoxelObstacleField(
+            latest_occupied_cloud_, latest_known_free_cloud_,
+            voxel_resolution_, obstacle_inflation_));
+      } else {
+        obstacle_field_.reset(new VoxelObstacleField(
+            latest_occupied_cloud_, voxel_resolution_, obstacle_inflation_));
+      }
       map_seen_ = true;
-      ROS_INFO_STREAM("Route-intent obstacle field ready: input_points="
-                      << cloud.size() << ", inflated_voxels="
-                      << obstacle_field_->occupiedVoxelCount());
+      ROS_INFO_STREAM_THROTTLE(
+          2.0, "Route-intent obstacle field ready: input_points="
+                   << latest_occupied_cloud_.size() << ", inflated_voxels="
+                   << obstacle_field_->occupiedVoxelCount());
     } catch (const std::exception& error) {
       obstacle_field_.reset();
       map_seen_ = false;
@@ -218,7 +249,7 @@ class SubgroupRouteIntent {
 	  }
 
 	  bool backendLegacySplit() const {
-	    return backendSplit();
+	    return kUavCount == 4 && backendSplit();
 	  }
 
   bool inputsReady() const {
@@ -257,8 +288,11 @@ class SubgroupRouteIntent {
     const Vec3& origin = positions_[uav];
     const Vec3 endpoint{origin.x + sensor_range_ * std::cos(angle),
                         origin.y + sensor_range_ * std::sin(angle), origin.z};
-    const Vec3 hit = obstacle_field_->firstHit(
-        origin, endpoint, raycast_resolution_);
+    const Vec3 hit = kUavCount == 6
+                         ? obstacle_field_->firstUnsafe(
+                               origin, endpoint, raycast_resolution_)
+                         : obstacle_field_->firstHit(
+                               origin, endpoint, raycast_resolution_);
     return std::min(sensor_range_, norm(subtract(hit, origin)));
   }
 
@@ -272,6 +306,9 @@ class SubgroupRouteIntent {
 
 	  Candidate bestCandidateForDrone(std::size_t uav) const {
 	    Candidate best;
+	    const Vec3 swarm_center = swarmCentroid();
+	    const double reference_angle =
+	        std::atan2(goal_y_ - swarm_center.y, goal_x_ - swarm_center.x);
 	    const double goal_angle =
 	        std::atan2(goal_y_ - positions_[uav].y, goal_x_ - positions_[uav].x);
 	    const double previous_angle = previous_drone_angle_valid_[uav]
@@ -284,6 +321,10 @@ class SubgroupRouteIntent {
 	                        static_cast<double>(ray_count_);
 	      const double goal_error = angleDistance(candidate.angle, goal_angle);
 	      if (goal_error > forward_half_angle_) continue;
+	      if (dynamic_locked_sides_[uav] != 0 &&
+	          lateralSide(candidate.angle, reference_angle) !=
+	              dynamic_locked_sides_[uav])
+	        continue;
 	      candidate.common_radius = freeDistance(static_cast<int>(uav),
 	                                             candidate.angle);
 	      candidate.usable_length =
@@ -449,6 +490,8 @@ class SubgroupRouteIntent {
 	    release_fade_started_ = ros::Time();
 	    previous_angle_valid_ = {{false, false}};
 	    previous_drone_angle_valid_ = {{false, false, false, false}};
+	    dynamic_locked_sides_.fill(0);
+	    dynamic_release_candidate_started_ = ros::Time();
 	  }
 
   std::array<GroupIntent, kGroupCount> computeIntents(
@@ -752,6 +795,38 @@ class SubgroupRouteIntent {
 
 	  void publishDynamicPerDrone() {
 	    const ros::Time stamp = ros::Time::now();
+	    const Vec3 swarm_center = swarmCentroid();
+	    const double reference_angle =
+	        std::atan2(goal_y_ - swarm_center.y, goal_x_ - swarm_center.x);
+	    const Vec3 lateral_axis{-std::sin(reference_angle),
+	                            std::cos(reference_angle), 0.0};
+	    std::array<double, kUavCount> direct_free_distances{};
+	    bool any_dynamic_lock = false;
+	    bool all_direct_routes_clear = true;
+	    for (std::size_t uav = 0; uav < kUavCount; ++uav) {
+	      const double goal_angle = std::atan2(goal_y_ - positions_[uav].y,
+	                                           goal_x_ - positions_[uav].x);
+	      direct_free_distances[uav] =
+	          freeDistance(static_cast<int>(uav), goal_angle);
+	      any_dynamic_lock =
+	          any_dynamic_lock || dynamic_locked_sides_[uav] != 0;
+	      all_direct_routes_clear =
+	          all_direct_routes_clear &&
+	          direct_free_distances[uav] >= lock_release_distance_;
+	    }
+	    if (any_dynamic_lock && all_direct_routes_clear) {
+	      if (dynamic_release_candidate_started_.isZero())
+	        dynamic_release_candidate_started_ = stamp;
+	      if ((stamp - dynamic_release_candidate_started_).toSec() >=
+	          lock_release_persistence_) {
+	        dynamic_locked_sides_.fill(0);
+	        dynamic_release_candidate_started_ = ros::Time();
+	        ROS_INFO("[route_intent_6uav] Released all sides after %.2f s of six-UAV clear goal visibility",
+	                 lock_release_persistence_);
+	      }
+	    } else {
+	      dynamic_release_candidate_started_ = ros::Time();
+	    }
 	    visualization_msgs::MarkerArray markers;
 	    visualization_msgs::Marker clear;
 	    clear.action = visualization_msgs::Marker::DELETEALL;
@@ -760,13 +835,32 @@ class SubgroupRouteIntent {
 	    int marker_id = 1;
 	
 	    for (std::size_t uav = 0; uav < kUavCount; ++uav) {
+	      const double direct_free = direct_free_distances[uav];
+	      if (dynamic_locked_sides_[uav] == 0 &&
+	          direct_free < coordination_trigger_distance_) {
+	        const Vec3 offset = subtract(positions_[uav], swarm_center);
+	        const double lateral_offset =
+	            offset.x * lateral_axis.x + offset.y * lateral_axis.y;
+	        if (std::fabs(lateral_offset) > coordination_side_deadband_) {
+	          dynamic_locked_sides_[uav] = lateral_offset > 0.0 ? 1 : -1;
+	        } else {
+	          const Candidate unrestricted = bestCandidateForDrone(uav);
+	          dynamic_locked_sides_[uav] =
+	              lateralSide(unrestricted.angle, reference_angle);
+	          if (dynamic_locked_sides_[uav] == 0)
+	            dynamic_locked_sides_[uav] = (uav % 2 == 0) ? -1 : 1;
+	        }
+	        ROS_WARN("[route_intent_6uav] D%zu locked online side %d",
+	                 uav, dynamic_locked_sides_[uav]);
+	      }
+
 	      const Candidate selected = bestCandidateForDrone(uav);
 	      previous_drone_angles_[uav] = selected.angle;
 	      previous_drone_angle_valid_[uav] = true;
-	      const double gain =
-	          feedback_enabled_ && selected.common_radius < lock_release_distance_
-	              ? 1.0
-	              : 0.0;
+	      const double gain = feedback_enabled_ &&
+	                                  dynamic_locked_sides_[uav] != 0
+	                              ? 1.0
+	                              : 0.0;
 	      const double arrow_length =
 	          std::min(guide_lookahead_, selected.usable_length);
 	
@@ -823,7 +917,8 @@ class SubgroupRouteIntent {
 	      values.data.push_back(selected.score);
 	      values.data.push_back(1.0);
 	      values.data.push_back(1.0);
-	      values.data.push_back(0.0);
+	      values.data.push_back(
+	          static_cast<double>(dynamic_locked_sides_[uav]));
 	      values.data.push_back(gain);
 	    }
 	
@@ -832,7 +927,7 @@ class SubgroupRouteIntent {
 	            << "{\"mode\":\""
 	            << (feedback_enabled_ ? "GUIDANCE_ENABLED" : "SHADOW_ONLY")
 	            << "\",\"state\":\"ACTIVE_DYNAMIC_PER_DRONE\""
-	            << ",\"records\":4}";
+	            << ",\"records\":" << kUavCount << "}";
 	    std_msgs::String summary_message;
 	    summary_message.data = summary.str();
 	    marker_publisher_.publish(markers);
@@ -855,7 +950,6 @@ class SubgroupRouteIntent {
 	    }
 	    try {
 	      if (!backendLegacySplit()) {
-	        resetRouteLock();
 	        publishDynamicPerDrone();
 	        return;
 	      }
@@ -877,6 +971,7 @@ class SubgroupRouteIntent {
   std::array<ros::Subscriber, kUavCount> odom_subscribers_;
   std::array<ros::Subscriber, kUavCount> group_subscribers_;
   ros::Subscriber obstacle_subscriber_;
+  ros::Subscriber known_free_subscriber_;
   ros::Publisher intent_publisher_;
   ros::Publisher summary_publisher_;
   ros::Publisher marker_publisher_;
@@ -891,11 +986,18 @@ class SubgroupRouteIntent {
 	  std::array<double, kUavCount> previous_drone_angles_{{0.0, 0.0, 0.0, 0.0}};
 	  std::array<bool, kUavCount> previous_drone_angle_valid_{
 	      {false, false, false, false}};
+  std::array<int, kUavCount> dynamic_locked_sides_{};
+  ros::Time dynamic_release_candidate_started_;
   std::unique_ptr<VoxelObstacleField> obstacle_field_;
+  pcl::PointCloud<pcl::PointXYZ> latest_occupied_cloud_;
+  pcl::PointCloud<pcl::PointXYZ> latest_known_free_cloud_;
+  bool occupied_seen_{false};
+  bool known_free_seen_{false};
   bool map_seen_ = false;
   std::string odom_suffix_ = "visual_slam/odom";
   std::string frame_id_ = "world";
   std::string obstacle_cloud_topic_ = "/map_generator/global_cloud";
+  std::string known_free_cloud_topic_ = "/swarm/observed_free";
   double voxel_resolution_ = 0.10;
   double obstacle_inflation_ = 0.35;
   double odom_timeout_ = 2.0;

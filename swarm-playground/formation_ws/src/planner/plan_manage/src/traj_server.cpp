@@ -20,6 +20,8 @@ double traj_duration_;
 ros::Time start_time_;
 int traj_id_;
 ros::Time heartbeat_time_(0);
+bool heartbeat_paused_ = false;
+ros::Time heartbeat_pause_start_(0);
 Eigen::Vector3d last_pos_;
 
 // yaw control
@@ -28,7 +30,17 @@ double time_forward_;
 
 void heartbeatCallback(std_msgs::EmptyPtr msg)
 {
-  heartbeat_time_ = ros::Time::now();
+  const ros::Time now = ros::Time::now();
+  if (heartbeat_paused_)
+  {
+    // Planning can legitimately block its FSM callback while optimizing.
+    // Pause trajectory time across that gap instead of jumping forward or
+    // requiring a new trajectory message to re-arm the server.
+    start_time_ += now - heartbeat_pause_start_;
+    heartbeat_paused_ = false;
+    ROS_WARN("[traj_server] Planner heartbeat restored; resuming active trajectory.");
+  }
+  heartbeat_time_ = now;
 }
 
 void polyTrajCallback(traj_utils::PolyTrajPtr msg)
@@ -65,8 +77,11 @@ void polyTrajCallback(traj_utils::PolyTrajPtr msg)
   start_time_ = msg->start_time;
   traj_duration_ = traj_->getTotalDuration();
   traj_id_ = msg->traj_id;
+  last_pos_ = traj_->getPos(0.0);
 
   receive_traj_ = true;
+  if (heartbeat_paused_)
+    heartbeat_pause_start_ = ros::Time::now();
 }
 
 std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, double dt)
@@ -169,9 +184,15 @@ void cmdCallback(const ros::TimerEvent &e)
 
   if ((time_now - heartbeat_time_).toSec() > 0.5)
   {
-    ROS_ERROR("[traj_server] Lost heartbeat from the planner, is he dead?");
-
-    receive_traj_ = false;
+    if (!heartbeat_paused_)
+    {
+      heartbeat_paused_ = true;
+      heartbeat_pause_start_ = time_now;
+      ROS_ERROR("[traj_server] Lost planner heartbeat; pausing active trajectory.");
+    }
+    // Keep the downstream command stream alive while holding the last safe
+    // point.  Clearing receive_traj_ here used to make a transient planner
+    // stall permanent and caused poscmd_2_odom command timeouts.
     publish_cmd(last_pos_, Vector3d::Zero(), Vector3d::Zero(), Vector3d::Zero(), last_yaw_, 0);
     return;
   }

@@ -1,0 +1,14 @@
+<launch>
+    <!-- Reproducible hidden-map test.  The seed is consumed only by the world
+         generator; planners and topology nodes receive no obstacle geometry. -->
+    <arg name="rviz" default="true"/>
+    <arg name="random_seed" default="7"/>
+    <arg name="max_vel" default="0.3"/>
+
+    <include file="$(find ego_planner)/launch/formation_6uav_criterion_auto_split_wall.launch">
+        <arg name="rviz" value="$(arg rviz)"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+        <arg name="randomize_obstacles" value="true"/>
+        <arg name="random_seed" value="$(arg random_seed)"/>
+    </include>
+</launch>

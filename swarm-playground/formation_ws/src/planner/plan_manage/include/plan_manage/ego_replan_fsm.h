@@ -83,9 +83,13 @@ namespace ego_planner
     bool flag_realworld_experiment_;
     bool enable_fail_safe_;
     bool flag_escape_emergency_;
+    bool collision_recovery_active_{false};
+    bool fail_safe_before_collision_recovery_{true};
+    Eigen::Vector3d collision_recovery_target_{Eigen::Vector3d::Zero()};
     bool manual_formation_split_;
     bool general_dynamic_topology_enabled_{false};
     bool subgroup_route_intent_feedback_enabled_;
+    std::string subgroup_route_intent_topic_;
     bool initial_assignment_enabled_{false};
     bool initial_assignment_received_{false};
     std::vector<Eigen::Vector3d> formation_slots_;
@@ -141,6 +145,8 @@ namespace ego_planner
     /* safety */
     void checkCollisionCallback(const ros::TimerEvent &e);
     bool callEmergencyStop(Eigen::Vector3d stop_pos);
+    bool callEmergencyEscape(const Eigen::Vector3d &start_pos,
+                             const Eigen::Vector3d &free_pos);
     void publishSafetyStatus(const int map_occupancy,
                              const bool wall_guard_violation,
                              const LocalTrajData *info,

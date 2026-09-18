@@ -11,10 +11,6 @@
     <arg name="max_vel" default="0.3"/>
     <arg name="start_x" default="-6.0"/>
     <arg name="goal_x" default="8.0"/>
-    <arg name="wall_x" default="0.0"/>
-    <arg name="wall_y" default="0.0"/>
-    <arg name="wall_size_x" default="0.5"/>
-    <arg name="wall_size_y" default="4.7"/>
     <arg name="safety_distance" default="0.2"/>
     <arg name="wall_guard_check_horizon" default="3.0"/>
     <arg name="formation_weight" default="100"/>
@@ -23,6 +19,8 @@
     <arg name="merge_sync_duration" default="20.0"/>
     <arg name="merge_sync_backtrack_tolerance" default="0.03"/>
     <arg name="merge_sync_weight" default="1000.0"/>
+    <arg name="subgroup_route_intent_feedback_enabled" default="true"/>
+    <arg name="subgroup_route_intent_topic" default="/subgroup_route_intent_6uav/intents"/>
 
     <include file="$(find ego_planner)/launch/run_in_sim.launch">
         <arg name="drone_id" value="$(arg drone_id)"/>
@@ -38,10 +36,6 @@
         <arg name="obstacles_inflation" value="$(arg safety_distance)"/>
         <arg name="obstacle_clearance" value="$(arg safety_distance)"/>
         <arg name="use_wall_collision_guard" value="true"/>
-        <arg name="wall_x" value="$(arg wall_x)"/>
-        <arg name="wall_y" value="$(arg wall_y)"/>
-        <arg name="wall_size_x" value="$(arg wall_size_x)"/>
-        <arg name="wall_size_y" value="$(arg wall_size_y)"/>
         <arg name="wall_safety_distance" value="$(arg safety_distance)"/>
         <arg name="wall_guard_check_horizon" value="$(arg wall_guard_check_horizon)"/>
 
@@ -56,7 +50,8 @@
         <arg name="merge_sync_duration" value="$(arg merge_sync_duration)"/>
         <arg name="merge_sync_backtrack_tolerance" value="$(arg merge_sync_backtrack_tolerance)"/>
         <arg name="merge_sync_weight" value="$(arg merge_sync_weight)"/>
-        <arg name="subgroup_route_intent_feedback_enabled" value="false"/>
+        <arg name="subgroup_route_intent_feedback_enabled" value="$(arg subgroup_route_intent_feedback_enabled)"/>
+        <arg name="subgroup_route_intent_topic" value="$(arg subgroup_route_intent_topic)"/>
         <arg name="formation_weight" value="$(arg formation_weight)"/>
         <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
 
