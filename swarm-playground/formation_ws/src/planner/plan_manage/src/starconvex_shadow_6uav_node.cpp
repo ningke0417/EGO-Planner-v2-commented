@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -118,6 +119,8 @@ class SixUavShadow {
         << configured_edges.str() << " split=" << split_threshold_
         << " hard_split=" << hard_split_threshold_
         << " merge=" << merge_threshold_
+        << " reconnect_visibility="
+        << edge_reconnect_visibility_threshold_
         << " distance_split=" << distance_split_threshold_ << " m"
         << " distance_merge=" << distance_merge_threshold_ << " m"
         << " persistence=" << persistence_distance_
@@ -233,6 +236,8 @@ class SixUavShadow {
                       edge_cut_min_hold_duration_, 1.0);
     private_nh_.param("edge_reconnect_persistence",
                       edge_reconnect_persistence_, 0.8);
+    private_nh_.param("edge_reconnect_visibility_threshold",
+                      edge_reconnect_visibility_threshold_, 0.45);
     private_nh_.param("startup_topology_gate_enabled",
                       startup_topology_gate_enabled_, true);
     private_nh_.param("startup_edge_ready_persistence",
@@ -271,6 +276,8 @@ class SixUavShadow {
         persistence_distance_ < 0.0 ||
         edge_cut_min_hold_duration_ < 0.0 ||
         edge_reconnect_persistence_ < 0.0 ||
+        edge_reconnect_visibility_threshold_ <= 0.0 ||
+        edge_reconnect_visibility_threshold_ > 1.0 ||
         startup_edge_ready_persistence_ < 0.0 ||
         startup_topology_gate_max_wait_ <= 0.0 ||
         rear_split_propagation_factor_ <= 0.0 ||
@@ -504,6 +511,7 @@ class SixUavShadow {
     if (edge_states_[edge] != EdgeState::CUT) {
       edge_states_[edge] = EdgeState::CUT;
       edge_cut_since_[edge] = now;
+      ++edge_cut_count_[edge];
     } else if (edge_cut_since_[edge].isZero()) {
       edge_cut_since_[edge] = now;
     }
@@ -568,6 +576,7 @@ class SixUavShadow {
 
   void updateEdgeStates(const std::array<double, kEdgeCount>& scores,
                         const std::array<double, kEdgeCount>& clearances,
+                        const std::array<double, kEdgeCount>& visibility,
                         const Vec3& center) {
     const ros::Time now = ros::Time::now();
     std::array<bool, kRowEdgeCount> front_was_keep{};
@@ -596,8 +605,15 @@ class SixUavShadow {
           reconnect_candidate_since_[edge] = ros::Time();
           continue;
         }
+        // Reconnection answers a local safety question: is the corridor
+        // between this pair observed free, and are the vehicles close enough?
+        // Star-convex overlap remains a split signal, but is deliberately not
+        // a reconnection gate because two safe, mutually visible vehicles can
+        // have differently shaped surrounding free spaces.
         const bool reconnect_safe =
-            scores[edge] >= merge_threshold_ &&
+            visibility[edge] + 1e-9 >=
+                edge_reconnect_visibility_threshold_ &&
+            clearances[edge] > 0.0 &&
             edge_distance <= distance_merge_threshold_;
         if (!reconnect_safe) {
           reconnect_candidate_since_[edge] = ros::Time();
@@ -607,12 +623,18 @@ class SixUavShadow {
           reconnect_candidate_since_[edge] = now;
         if ((now - reconnect_candidate_since_[edge]).toSec() >=
             edge_reconnect_persistence_) {
+          last_reconnect_latency_[edge] =
+              (now - edge_cut_since_[edge]).toSec();
+          ++edge_reconnect_count_[edge];
           edge_states_[edge] = EdgeState::KEEP;
           edge_cut_since_[edge] = ros::Time();
           reconnect_candidate_since_[edge] = ros::Time();
           ROS_INFO_STREAM("[6UAV_EDGE_RECONNECT] edge " << edgeName(edge)
                           << " was continuously safe for "
-                          << edge_reconnect_persistence_ << " s");
+                          << edge_reconnect_persistence_ << " s; visibility="
+                          << visibility[edge] << " distance=" << edge_distance
+                          << " reconnect_latency="
+                          << last_reconnect_latency_[edge] << " s");
         }
         continue;
       }
@@ -635,6 +657,48 @@ class SixUavShadow {
     for (std::size_t edge = 0; edge < kRowEdgeCount; ++edge) {
       if (front_was_keep[edge] && edge_states_[edge] == EdgeState::CUT)
         triggerRearSplitPropagation(edge, edge + kRowEdgeCount, now);
+    }
+
+    std::ostringstream blocked;
+    bool have_cut_edge = false;
+    for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
+      minimum_clearance_observed_[edge] =
+          std::min(minimum_clearance_observed_[edge], clearances[edge]);
+      if (edge_states_[edge] != EdgeState::CUT) continue;
+      if (have_cut_edge) blocked << "; ";
+      have_cut_edge = true;
+      const double distance = planarDistance(
+          positions_[gEdges[edge][0]], positions_[gEdges[edge][1]]);
+      blocked << edgeName(edge) << "=";
+      bool wrote_reason = false;
+      const auto append_reason = [&blocked, &wrote_reason](const char* reason) {
+        if (wrote_reason) blocked << "+";
+        blocked << reason;
+        wrote_reason = true;
+      };
+      if (rearForcedCutActive(edge, now)) append_reason("forced_hold");
+      if (!edge_cut_since_[edge].isZero() &&
+          (now - edge_cut_since_[edge]).toSec() <
+              edge_cut_min_hold_duration_)
+        append_reason("cut_hold");
+      if (visibility[edge] + 1e-9 <
+          edge_reconnect_visibility_threshold_)
+        append_reason("visibility");
+      if (clearances[edge] <= 0.0) append_reason("clearance");
+      if (distance > distance_merge_threshold_) append_reason("distance");
+      if (!wrote_reason &&
+          (reconnect_candidate_since_[edge].isZero() ||
+           (now - reconnect_candidate_since_[edge]).toSec() <
+               edge_reconnect_persistence_))
+        append_reason("persistence");
+      blocked << "(V=" << visibility[edge]
+              << ",S=" << scores[edge]
+              << ",C=" << clearances[edge]
+              << ",D=" << distance << ")";
+    }
+    if (have_cut_edge) {
+      ROS_INFO_STREAM_THROTTLE(
+          1.0, "[6UAV_EDGE_RECONNECT_BLOCKED] " << blocked.str());
     }
   }
 
@@ -778,6 +842,13 @@ class SixUavShadow {
             << ",\"max_edge_distance\":" << max_edge_distance;
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
       const std::string name = edgeName(edge);
+      const ros::Time now = ros::Time::now();
+      const double reconnect_hold = reconnect_candidate_since_[edge].isZero()
+                                        ? 0.0
+                                        : (now - reconnect_candidate_since_[edge]).toSec();
+      const double cut_age = edge_cut_since_[edge].isZero()
+                                 ? 0.0
+                                 : (now - edge_cut_since_[edge]).toSec();
       summary << ",\"score_" << name << "\":" << scores[edge]
               << ",\"merge_score_" << name << "\":" << scores[edge]
               << ",\"overlap_" << name << "\":" << overlaps[edge]
@@ -788,7 +859,18 @@ class SixUavShadow {
               << planarDistance(positions_[gEdges[edge][0]],
                                 positions_[gEdges[edge][1]])
               << ",\"pending_distance_" << name << "\":"
-              << pending_distances_[edge];
+              << pending_distances_[edge]
+              << ",\"reconnect_hold_" << name << "\":" << reconnect_hold
+              << ",\"cut_age_" << name << "\":" << cut_age
+              << ",\"cut_count_" << name << "\":" << edge_cut_count_[edge]
+              << ",\"reconnect_count_" << name << "\":"
+              << edge_reconnect_count_[edge]
+              << ",\"last_reconnect_latency_" << name << "\":"
+              << last_reconnect_latency_[edge]
+              << ",\"minimum_clearance_" << name << "\":"
+              << (std::isfinite(minimum_clearance_observed_[edge])
+                      ? minimum_clearance_observed_[edge]
+                      : clearances[edge]);
     }
     summary << ",\"compute_seconds\":" << compute_time
             << ",\"rear_propagation_remaining_34\":"
@@ -867,7 +949,7 @@ class SixUavShadow {
             << "; automatic split/merge is now active.");
       }
 
-      updateEdgeStates(scores, clearances, center);
+      updateEdgeStates(scores, clearances, visibility, center);
       const auto component_list = connectedComponents();
       const std::string components = componentText(component_list);
       const std::string state = displayState(component_list);
@@ -943,6 +1025,7 @@ class SixUavShadow {
   double persistence_distance_{0.05};
   double edge_cut_min_hold_duration_{1.0};
   double edge_reconnect_persistence_{0.8};
+  double edge_reconnect_visibility_threshold_{0.45};
   bool startup_topology_gate_enabled_{true};
   bool startup_topology_gate_released_{false};
   double startup_edge_ready_persistence_{0.5};
@@ -957,6 +1040,14 @@ class SixUavShadow {
   std::array<ros::Time, kEdgeCount> rear_forced_cut_until_{};
   std::array<ros::Time, kEdgeCount> edge_cut_since_{};
   std::array<ros::Time, kEdgeCount> reconnect_candidate_since_{};
+  std::array<uint32_t, kEdgeCount> edge_cut_count_{};
+  std::array<uint32_t, kEdgeCount> edge_reconnect_count_{};
+  std::array<double, kEdgeCount> last_reconnect_latency_{};
+  std::array<double, kEdgeCount> minimum_clearance_observed_ = [] {
+    std::array<double, kEdgeCount> values{};
+    values.fill(std::numeric_limits<double>::infinity());
+    return values;
+  }();
   bool map_seen_{false};
   ros::Time inputs_ready_since_;
   bool last_safety_violation_{false};

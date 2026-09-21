@@ -92,8 +92,16 @@ namespace ego_planner
 
         /* double check: fine collision check */
         std::vector<std::pair<int, int>> segments_nouse;
-        if (min_ellip_dist2_ > pow((swarm_clearance_ * 1.25), 2) &&
-            finelyCheckAndSetConstraintPoints(segments_nouse, jerkOpt_, false) == CHK_RET::OBS_FREE)
+        const double swarm_clearance2 = pow((swarm_clearance_ * 1.25), 2);
+        const bool swarm_collision = min_ellip_dist2_ <= swarm_clearance2;
+        // Preserve the original short-circuit behavior: the map check updates
+        // obstacle constraints, so do not run it when swarm clearance already
+        // rejects this trajectory.
+        const CHK_RET map_check =
+            swarm_collision
+                ? CHK_RET::OBS_FREE
+                : finelyCheckAndSetConstraintPoints(segments_nouse, jerkOpt_, false);
+        if (!swarm_collision && map_check == CHK_RET::OBS_FREE)
         {
 
           // Eigen::Vector3d last_pt = pts_check_[0][0].second;
@@ -112,10 +120,26 @@ namespace ego_planner
         }
         else
         {
-          // A not-blank return value means collision to obstales
           flag_still_occ = true;
           restart_nums++;
-          printf("\033[32miter=%d,time(ms)=%5.3f, fine check collided, keep optimizing\n\033[0m", iter_num_, time_ms);
+          const char *collision_reason =
+              swarm_collision ? "swarm_collision"
+                              : (map_check == CHK_RET::FINISH
+                                     ? "map_collision"
+                                     : "map_check_error");
+          if (swarm_collision)
+          {
+            printf("\033[32miter=%d,time(ms)=%5.3f, fine check collided: %s "
+                   "(min_ellip_dist2=%.3f, threshold2=%.3f), keep optimizing\n\033[0m",
+                   iter_num_, time_ms, collision_reason, min_ellip_dist2_,
+                   swarm_clearance2);
+          }
+          else
+          {
+            printf("\033[32miter=%d,time(ms)=%5.3f, fine check collided: %s, "
+                   "keep optimizing\n\033[0m",
+                   iter_num_, time_ms, collision_reason);
+          }
         }
       }
       else if (result == lbfgs::LBFGSERR_CANCELED)

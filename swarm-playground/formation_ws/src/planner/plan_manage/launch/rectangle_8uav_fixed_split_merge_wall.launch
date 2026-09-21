@@ -92,6 +92,7 @@
         <param name="persistence_distance" value="0.05"/>
         <param name="edge_cut_min_hold_duration" value="1.0"/>
         <param name="edge_reconnect_persistence" value="0.8"/>
+        <param name="edge_reconnect_visibility_threshold" value="0.45"/>
         <param name="startup_topology_gate_enabled" value="true"/>
         <param name="startup_edge_ready_persistence" value="0.5"/>
         <param name="startup_topology_gate_max_wait" value="3.0"/>
@@ -114,7 +115,7 @@
         <param name="publish_rate" value="5.0"/>
         <param name="goal_x" value="$(arg goal_x)"/>
         <param name="goal_y" value="0.0"/>
-        <param name="feedback_enabled" value="true"/>
+        <param name="feedback_enabled" value="false"/>
         <param name="lock_release_distance" value="3.0"/>
         <param name="lock_release_persistence" value="1.5"/>
         <param name="show_debug_text" value="false"/>

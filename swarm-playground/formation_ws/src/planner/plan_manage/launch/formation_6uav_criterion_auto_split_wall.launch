@@ -29,6 +29,7 @@
     <arg name="distance_merge_threshold" default="1.7"/>
     <arg name="edge_cut_min_hold_duration" default="1.0"/>
     <arg name="edge_reconnect_persistence" default="0.8"/>
+    <arg name="edge_reconnect_visibility_threshold" default="0.45"/>
     <arg name="startup_topology_gate_enabled" default="true"/>
     <arg name="startup_edge_ready_persistence" default="0.5"/>
     <arg name="startup_topology_gate_max_wait" default="3.0"/>
@@ -138,6 +139,7 @@
         <param name="persistence_distance" value="0.05" type="double"/>
         <param name="edge_cut_min_hold_duration" value="$(arg edge_cut_min_hold_duration)" type="double"/>
         <param name="edge_reconnect_persistence" value="$(arg edge_reconnect_persistence)" type="double"/>
+        <param name="edge_reconnect_visibility_threshold" value="$(arg edge_reconnect_visibility_threshold)" type="double"/>
         <param name="startup_topology_gate_enabled" value="$(arg startup_topology_gate_enabled)" type="bool"/>
         <param name="startup_edge_ready_persistence" value="$(arg startup_edge_ready_persistence)" type="double"/>
         <param name="startup_topology_gate_max_wait" value="$(arg startup_topology_gate_max_wait)" type="double"/>

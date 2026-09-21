@@ -135,8 +135,11 @@ namespace ego_planner
     ros::NodeHandle node_;
     ros::Timer exec_timer_, safety_timer_;
     ros::Subscriber waypoint_sub_, odom_sub_, trigger_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, manual_split_sub_, dynamic_topology_sub_, topology_command_sub_, split_formation_scale_sub_, split_progress_sync_scale_sub_, subgroup_route_intent_sub_, initial_assignment_sub_;
-    ros::Publisher poly_traj_pub_, data_disp_pub_, broadcast_ploytraj_pub_, heartbeat_pub_, ground_height_pub_, formation_group_pub_, topology_ack_pub_, assignment_ack_pub_, subgroup_route_intent_status_pub_, safety_status_pub_, first_wall_violation_pub_;
+    ros::Publisher poly_traj_pub_, data_disp_pub_, broadcast_ploytraj_pub_, heartbeat_pub_, ground_height_pub_, formation_group_pub_, topology_ack_pub_, assignment_ack_pub_, subgroup_route_intent_status_pub_, safety_status_pub_, first_wall_violation_pub_, planning_metrics_pub_;
     ros::Time last_safety_status_stamp_;
+    uint64_t planning_attempt_count_{0};
+    uint64_t planning_success_count_{0};
+    uint64_t planning_failure_count_{0};
 
     /* state machine functions */
     void execFSMCallback(const ros::TimerEvent &e);

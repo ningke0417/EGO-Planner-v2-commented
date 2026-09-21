@@ -302,13 +302,13 @@ Visualization Manager:
       Queue Size: 10
       Value: true
     - Class: rviz/MarkerArray
-      Enabled: true
+      Enabled: false
       Marker Topic: /subgroup_route_intent_8uav/markers
       Name: eight_uav_subgroup_route_intent
       Namespaces:
         {}
       Queue Size: 10
-      Value: true
+      Value: false
     - Class: rviz/MarkerArray
       Enabled: true
       Marker Topic: /map_generator/wall_geometry

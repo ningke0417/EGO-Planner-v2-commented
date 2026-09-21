@@ -170,6 +170,10 @@ namespace ego_planner
             std::to_string(planner_manager_->pp_.drone_id) +
             "/first_wall_violation",
         1, true);
+    planning_metrics_pub_ = nh.advertise<std_msgs::String>(
+        "/formation_metrics/drone_" +
+            std::to_string(planner_manager_->pp_.drone_id) + "/planning",
+        1, true);
     publishFormationGroupState();
     publishSubgroupRouteIntentState(
         subgroup_route_intent_feedback_enabled_ ? "WAITING" : "DISABLED");
@@ -1632,6 +1636,22 @@ namespace ego_planner
         flag_randomPolyTraj, touch_goal_);
 
     have_new_target_ = false;
+
+    ++planning_attempt_count_;
+    if (plan_success)
+      ++planning_success_count_;
+    else
+      ++planning_failure_count_;
+    std_msgs::String planning_metrics;
+    std::ostringstream metrics_stream;
+    metrics_stream << "{\"drone_id\":" << planner_manager_->pp_.drone_id
+                   << ",\"attempts\":" << planning_attempt_count_
+                   << ",\"successes\":" << planning_success_count_
+                   << ",\"failures\":" << planning_failure_count_ << "}";
+    planning_metrics.data = metrics_stream.str();
+    planning_metrics_pub_.publish(planning_metrics);
+    if (!plan_success)
+      ROS_WARN_STREAM("[PLANNING_METRICS] " << planning_metrics.data);
 
     if (plan_success)
     {
