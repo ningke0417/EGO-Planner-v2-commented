@@ -253,8 +253,8 @@ class SixUavShadow {
     private_nh_.param("azimuth_step", geometry_.azimuth_step, 0.10);
     private_nh_.param("raycast_resolution", geometry_.raycast_resolution, 0.10);
     private_nh_.param("vertical_resolution", geometry_.vertical_resolution, 0.20);
-    private_nh_.param("frontier_floor", geometry_.frontier_floor, 0.50);
-    private_nh_.param("frontier_roof", geometry_.frontier_roof, 1.50);
+    private_nh_.param("frontier_floor", geometry_.frontier_floor, 0.0);
+    private_nh_.param("frontier_roof", geometry_.frontier_roof, 3.0);
     private_nh_.param("delta_floor", geometry_.delta_floor, -0.50);
     private_nh_.param("delta_roof", geometry_.delta_roof, 1.50);
     if (publish_rate_ <= 0.0 || voxel_resolution_ <= 0.0 ||

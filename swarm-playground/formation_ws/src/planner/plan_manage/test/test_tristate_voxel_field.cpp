@@ -9,6 +9,8 @@ namespace {
 
 using starconvex_adapter::Vec3;
 using starconvex_adapter::VoxelObstacleField;
+using starconvex_adapter::GeometryOptions;
+using starconvex_adapter::generateBoundaryCloud;
 
 TEST(TriStateVoxelField, UnknownIsNotKnownFree) {
   pcl::PointCloud<pcl::PointXYZ> occupied;
@@ -43,6 +45,35 @@ TEST(TriStateVoxelField, LegacyFieldRetainsBinaryBehavior) {
   const VoxelObstacleField field(occupied, 0.2, 0.0);
   EXPECT_TRUE(field.knownFree({0.4, 1.0, 1.0}));
   EXPECT_FALSE(field.hasKnownFreeLayer());
+}
+
+TEST(StarConvexVerticalSampling, CoversZeroToThreeMeterFlightEnvelope) {
+  pcl::PointCloud<pcl::PointXYZ> occupied;
+  occupied.push_back(pcl::PointXYZ(100.0F, 100.0F, 100.0F));
+  const VoxelObstacleField field(occupied, 0.2, 0.0);
+  GeometryOptions options;
+  options.sensor_range = 1.0;
+  options.azimuth_step = 0.5;
+  options.raycast_resolution = 0.2;
+  options.vertical_resolution = 0.2;
+  options.frontier_floor = 0.0;
+  options.frontier_roof = 3.0;
+  options.delta_floor = -0.5;
+  options.delta_roof = 0.5;
+
+  EXPECT_NO_THROW({
+    const auto low = generateBoundaryCloud({0.0, 0.0, 0.0}, field, options);
+    EXPECT_FALSE(low->empty());
+  });
+  EXPECT_NO_THROW({
+    const auto high = generateBoundaryCloud({0.0, 0.0, 3.0}, field, options);
+    EXPECT_FALSE(high->empty());
+  });
+  EXPECT_NO_THROW({
+    const auto recorded_peak =
+        generateBoundaryCloud({0.0, 0.0, 2.75}, field, options);
+    EXPECT_FALSE(recorded_peak->empty());
+  });
 }
 
 }  // namespace

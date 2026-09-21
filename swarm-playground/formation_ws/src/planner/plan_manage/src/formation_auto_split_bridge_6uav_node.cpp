@@ -44,6 +44,10 @@ class SixUavAutoSplitBridge {
                                    criterion_summary_topic_,
                                    "/starconvex_shadow_6uav/summary");
     private_nh_.param("criterion_timeout", criterion_timeout_, 2.0);
+    private_nh_.param("post_merge_baseline_timeout",
+                      post_merge_baseline_timeout_, 3.0);
+    private_nh_.param("post_merge_freshness_delay",
+                      post_merge_freshness_delay_, 0.3);
     private_nh_.param("split_ready_persistence", split_ready_persistence_, 0.4);
     private_nh_.param("topology_change_persistence",
                       topology_change_persistence_, 0.4);
@@ -77,7 +81,9 @@ class SixUavAutoSplitBridge {
     private_nh_.param("secondary_distance_split_threshold",
                       secondary_distance_split_threshold_, 1.80);
     private_nh_.param("ack_timeout", ack_timeout_, 2.0);
-    if (criterion_timeout_ <= 0.0 || split_ready_persistence_ < 0.0 ||
+    if (criterion_timeout_ <= 0.0 || post_merge_baseline_timeout_ <= 0.0 ||
+        post_merge_freshness_delay_ < 0.0 ||
+        split_ready_persistence_ < 0.0 ||
         topology_change_persistence_ < 0.0 || merge_max_edge_distance_ <= 0.0 ||
         merge_ready_persistence_ < 0.0 ||
         weak_reconnect_ready_persistence_ < 0.0 ||
@@ -475,6 +481,7 @@ class SixUavAutoSplitBridge {
     }
     criterion_assignment_generation_ = summary_generation;
     criterion_stamp_ = ros::Time::now();
+    ++criterion_summary_sequence_;
   }
 
   void ackCallback(
@@ -510,11 +517,18 @@ class SixUavAutoSplitBridge {
                        [](bool value) { return value; });
   }
 
+  bool startsNewSplitCycle(const std::string& reason) const {
+    return reason == "CRITERION_SPLIT" ||
+           reason == "CRITERION_TIMEOUT_FAILSAFE" ||
+           reason == "POST_MERGE_HARD_UNSAFE_FAILSAFE" ||
+           reason == "POST_MERGE_BASELINE_TIMEOUT_FAILSAFE";
+  }
+
   void issueCommand(uint8_t mode, const std::string& components,
                     const std::string& reason, uint32_t edge_keep_mask,
                     double formation_scale = -1.0) {
     if (mode == ego_planner::FormationTopologyCommand::SPLIT &&
-        reason == "CRITERION_SPLIT" &&
+        startsNewSplitCycle(reason) &&
         active_command_.mode == ego_planner::FormationTopologyCommand::INTACT) {
       reassignment_completed_for_split_cycle_ = false;
     }
@@ -537,6 +551,19 @@ class SixUavAutoSplitBridge {
             ? split_progress_sync_weight_scale_
             : 0.0;
     active_command_.reason = reason;
+    if (mode == ego_planner::FormationTopologyCommand::INTACT &&
+        reason == "VISIBILITY_MERGED_AFTER_WEAK_RECOVERY") {
+      // A criterion summary received before this command still describes the
+      // weak one-component topology.  Do not let that cached PARTIAL_CUT/SPLIT
+      // result immediately undo the merge.  A new summary from the current
+      // assignment generation must first establish an INTACT baseline.
+      post_merge_baseline_required_ = true;
+      post_merge_baseline_generation_ = assignment_generation_;
+      post_merge_minimum_summary_sequence_ = criterion_summary_sequence_ + 1;
+      post_merge_command_stamp_ = active_command_.header.stamp;
+    } else if (mode == ego_planner::FormationTopologyCommand::SPLIT) {
+      post_merge_baseline_required_ = false;
+    }
     acknowledgements_.fill(false);
     command_stamp_ = ros::Time::now();
     last_command_publish_ = command_stamp_;
@@ -581,12 +608,19 @@ class SixUavAutoSplitBridge {
     if (!componentAssignments(active_command_.components, &groups))
       return false;
 
-    bool has_cross_group_edge = false;
+    const bool partial_one_component =
+        active_command_.components == kAllUavComponent &&
+        active_command_.edge_keep_mask != kAllEdgesMask;
+    bool has_reconnect_edge = false;
     for (std::size_t edge = 0; edge < kEdgeCount; ++edge) {
       const int first = gEdges[edge][0];
       const int second = gEdges[edge][1];
-      if (groups[first] == groups[second]) continue;
-      has_cross_group_edge = true;
+      const bool reconnect_edge = partial_one_component
+                                      ? !(active_command_.edge_keep_mask &
+                                          (uint32_t{1} << edge))
+                                      : groups[first] != groups[second];
+      if (!reconnect_edge) continue;
+      has_reconnect_edge = true;
       if (edge_visibility_[edge] + 1e-9 <
           weak_reconnect_visibility_threshold_) {
         return false;
@@ -595,7 +629,7 @@ class SixUavAutoSplitBridge {
         return false;
       }
     }
-    return has_cross_group_edge;
+    return has_reconnect_edge;
   }
 
   bool anyHardUnsafeEdge() const {
@@ -693,7 +727,8 @@ class SixUavAutoSplitBridge {
   bool maybeStartWeakRecovery(const ros::Time& now) {
     if (!weak_reconnect_enabled_ || !auto_merge_enabled_ ||
         active_command_.mode != ego_planner::FormationTopologyCommand::SPLIT ||
-        active_command_.components == kAllUavComponent) {
+        (active_command_.components == kAllUavComponent &&
+         active_command_.edge_keep_mask == kAllEdgesMask)) {
       weak_reconnect_ready_since_ = ros::Time(0);
       return false;
     }
@@ -736,6 +771,72 @@ class SixUavAutoSplitBridge {
     return true;
   }
 
+  void enterCriterionTimeoutFailsafe(const std::string& reason) {
+    weak_recovery_active_ = false;
+    weak_recovery_ramp_since_ = ros::Time(0);
+    weak_recovery_source_components_.clear();
+    post_merge_baseline_required_ = false;
+    criterion_edge_metrics_valid_ = false;
+    clearCandidate();
+    merge_ready_since_ = ros::Time(0);
+    weak_reconnect_ready_since_ = ros::Time(0);
+
+    std::array<bool, kEdgeCount> disconnected{};
+    const std::string safe_components = componentsFromEdges(disconnected);
+    if (active_command_.mode == ego_planner::FormationTopologyCommand::SPLIT &&
+        active_command_.edge_keep_mask == 0u &&
+        active_command_.components == safe_components) {
+      publishStatus("6UAV CRITERION_TIMEOUT FAILSAFE_ACTIVE");
+      return;
+    }
+    ROS_ERROR_STREAM("[6UAV_AUTO_SPLIT] Criterion unavailable; cutting all "
+                     "formation edges instead of retaining stale KEEP edges.");
+    issueCommand(ego_planner::FormationTopologyCommand::SPLIT,
+                 safe_components, reason, 0u);
+  }
+
+  bool handlePostMergeBaseline(const ros::Time& now) {
+    if (!post_merge_baseline_required_ ||
+        active_command_.mode != ego_planner::FormationTopologyCommand::INTACT)
+      return false;
+
+    const bool fresh_current_generation =
+        criterion_summary_sequence_ >= post_merge_minimum_summary_sequence_ &&
+        criterion_stamp_ >=
+            post_merge_command_stamp_ +
+                ros::Duration(post_merge_freshness_delay_) &&
+        criterion_assignment_generation_ ==
+            post_merge_baseline_generation_ &&
+        criterion_assignment_generation_ == assignment_generation_;
+    if (fresh_current_generation && criterion_state_ == "INTACT") {
+      post_merge_baseline_required_ = false;
+      clearCandidate();
+      publishStatus("6UAV POST_MERGE FRESH_INTACT_BASELINE");
+      ROS_INFO_STREAM("[6UAV_AUTO_SPLIT] Accepted fresh post-merge INTACT "
+                      "baseline for assignment generation="
+                      << assignment_generation_);
+      return true;
+    }
+
+    // A fresh hard visibility loss is a real safety event, not merge
+    // hysteresis.  Fail open in topology (all formation edges CUT) so each UAV
+    // can avoid the obstacle independently.
+    if (fresh_current_generation && criterion_edge_metrics_valid_ &&
+        anyHardUnsafeEdge()) {
+      enterCriterionTimeoutFailsafe("POST_MERGE_HARD_UNSAFE_FAILSAFE");
+      return true;
+    }
+
+    if ((now - post_merge_command_stamp_).toSec() >=
+        post_merge_baseline_timeout_) {
+      enterCriterionTimeoutFailsafe("POST_MERGE_BASELINE_TIMEOUT_FAILSAFE");
+      return true;
+    }
+    clearCandidate();
+    publishStatus("6UAV POST_MERGE WAIT_FRESH_INTACT_BASELINE");
+    return true;
+  }
+
   void evaluateLegacyDirectMerge(const ros::Time& now,
                                  bool backend_split) {
     if (weak_reconnect_enabled_ || !backend_split || !auto_merge_enabled_ ||
@@ -755,18 +856,20 @@ class SixUavAutoSplitBridge {
   }
 
   void evaluateCriterion(const ros::Time& now) {
-    if (criterion_stamp_.isZero() ||
-        (now - criterion_stamp_).toSec() > criterion_timeout_) {
+    if (criterion_stamp_.isZero()) {
       clearCandidate();
       merge_ready_since_ = ros::Time(0);
       weak_reconnect_ready_since_ = ros::Time(0);
-      if (weak_recovery_active_ && commandConfirmed()) {
-        ROS_ERROR("[6UAV_WEAK_RECOVERY] Criterion timed out; restoring split topology.");
-        leaveWeakRecovery("", "WEAK_RECOVERY_CRITERION_TIMEOUT");
-      }
       return;
     }
     if (!commandConfirmed()) return;
+
+    if ((now - criterion_stamp_).toSec() > criterion_timeout_) {
+      enterCriterionTimeoutFailsafe("CRITERION_TIMEOUT_FAILSAFE");
+      return;
+    }
+
+    if (handlePostMergeBaseline(now)) return;
 
     const bool backend_split =
         active_command_.mode == ego_planner::FormationTopologyCommand::SPLIT;
@@ -864,6 +967,8 @@ class SixUavAutoSplitBridge {
   double center_x_{0.0};
   double max_edge_distance_{0.0};
   double criterion_timeout_{2.0};
+  double post_merge_baseline_timeout_{3.0};
+  double post_merge_freshness_delay_{0.3};
   double split_ready_persistence_{0.4};
   double topology_change_persistence_{0.4};
   bool auto_merge_enabled_{true};
@@ -906,6 +1011,11 @@ class SixUavAutoSplitBridge {
   bool reassignment_completed_for_split_cycle_{false};
   bool weak_recovery_active_{false};
   std::string weak_recovery_source_components_;
+  bool post_merge_baseline_required_{false};
+  uint32_t post_merge_baseline_generation_{0};
+  uint64_t criterion_summary_sequence_{0};
+  uint64_t post_merge_minimum_summary_sequence_{0};
+  ros::Time post_merge_command_stamp_;
 };
 
 }  // namespace

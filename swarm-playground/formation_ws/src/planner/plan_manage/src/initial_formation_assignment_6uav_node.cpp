@@ -134,8 +134,13 @@ private:
       return;
     }
 
+    const bool starts_new_split_cycle =
+        message->reason == "CRITERION_SPLIT" ||
+        message->reason == "CRITERION_TIMEOUT_FAILSAFE" ||
+        message->reason == "POST_MERGE_HARD_UNSAFE_FAILSAFE" ||
+        message->reason == "POST_MERGE_BASELINE_TIMEOUT_FAILSAFE";
     if (message->mode == ego_planner::FormationTopologyCommand::SPLIT &&
-        message->reason == "CRITERION_SPLIT" && was_intact)
+        starts_new_split_cycle && was_intact)
     {
       split_cycle_active_ = true;
       reassignment_locked_for_split_cycle_ = false;
