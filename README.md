@@ -31,3 +31,6 @@ roslaunch ego_planner formation_6uav_sparse_random.launch
 roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch
 随机障碍环境：
 roslaunch ego_planner rectangle_8uav_sparse_random.launch
+
+
+#999999
