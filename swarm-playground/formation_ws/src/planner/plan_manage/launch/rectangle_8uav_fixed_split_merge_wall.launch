@@ -48,6 +48,16 @@
         <param name="random_seed" value="1"/>
     </node>
 
+    <!-- Keep each vehicle's local obstacle map independent of its yaw. -->
+    <param name="/drone_0_pcl_render_node/full_360_sensing" value="false" type="bool"/>
+    <param name="/drone_1_pcl_render_node/full_360_sensing" value="false" type="bool"/>
+    <param name="/drone_2_pcl_render_node/full_360_sensing" value="false" type="bool"/>
+    <param name="/drone_3_pcl_render_node/full_360_sensing" value="false" type="bool"/>
+    <param name="/drone_4_pcl_render_node/full_360_sensing" value="false" type="bool"/>
+    <param name="/drone_5_pcl_render_node/full_360_sensing" value="false" type="bool"/>
+    <param name="/drone_6_pcl_render_node/full_360_sensing" value="false" type="bool"/>
+    <param name="/drone_7_pcl_render_node/full_360_sensing" value="false" type="bool"/>
+
     <node pkg="ego_planner" type="swarm_observed_map_8uav_node"
           name="swarm_observed_map_8uav" output="screen" required="true">
         <param name="odom_topic_suffix" value="$(arg odom_topic)"/>
