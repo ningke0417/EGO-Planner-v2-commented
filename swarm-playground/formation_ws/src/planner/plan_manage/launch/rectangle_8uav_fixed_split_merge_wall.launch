@@ -135,15 +135,18 @@
           name="formation_auto_split_bridge_8uav" output="screen" required="true">
         <param name="criterion_summary_topic" value="/starconvex_shadow_8uav/summary"/>
         <param name="criterion_timeout" value="2.0"/>
-        <param name="post_merge_baseline_timeout" value="3.0"/>
+        <param name="post_merge_baseline_timeout" value="6.0"/>
         <param name="post_merge_freshness_delay" value="0.3"/>
         <param name="split_ready_persistence" value="0.1"/>
         <param name="topology_change_persistence" value="0.1"/>
         <param name="secondary_hard_split_threshold" value="0.20"/>
         <param name="secondary_distance_split_threshold" value="1.8"/>
         <param name="auto_merge_enabled" value="true"/>
-        <param name="merge_max_edge_distance" value="3.0"/>
-        <param name="merge_ready_persistence" value="0.3"/>
+        <!-- Weak recovery may start at 3.0 m, but only declare the formation
+             fully merged after every edge reaches the criterion's 1.7 m
+             reconnect distance and remains ready for 0.8 s. -->
+        <param name="merge_max_edge_distance" value="1.7"/>
+        <param name="merge_ready_persistence" value="0.8"/>
         <param name="weak_reconnect_enabled" value="true"/>
         <param name="weak_reconnect_ready_persistence" value="0.8"/>
         <param name="weak_reconnect_visibility_threshold" value="1.0"/>
