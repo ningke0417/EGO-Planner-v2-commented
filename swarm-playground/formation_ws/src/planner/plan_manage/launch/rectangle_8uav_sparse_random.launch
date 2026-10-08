@@ -1,4 +1,5 @@
 <launch>
+    <arg name="coordination_mode" default="centralized"/>
     <!-- Same seeded obstacle environment as formation_6uav_sparse_random. -->
     <arg name="rviz" default="true"/>
     <arg name="random_seed" default="17"/>
@@ -58,6 +59,7 @@
     </node>
 
     <include file="$(find ego_planner)/launch/rectangle_8uav_fixed_split_merge_wall.launch">
+        <arg name="coordination_mode" value="$(arg coordination_mode)"/>
         <arg name="map_source" value="external"/>
         <arg name="rviz" value="$(arg rviz)"/>
         <arg name="max_vel" value="$(arg max_vel)"/>

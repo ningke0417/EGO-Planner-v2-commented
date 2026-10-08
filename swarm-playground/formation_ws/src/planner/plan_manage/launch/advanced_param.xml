@@ -1,4 +1,5 @@
 <launch>
+    <arg name="distributed_enabled" default="false"/>
     <arg name="map_size_x_"/>
     <arg name="map_size_y_"/>
     <arg name="map_size_z_"/>
@@ -85,12 +86,13 @@
     <!-- main node -->
     <!-- <node pkg="ego_planner" name="ego_planner_node" type="ego_planner_node" output="screen" launch-prefix="valgrind"> -->
     <node pkg="ego_planner" name="drone_$(arg drone_id)_ego_planner_node" type="ego_planner_node" output="screen">
+        <param name="formation/distributed_enabled" value="$(arg distributed_enabled)"/>
         <remap from="~odom_world" to="/drone_$(arg drone_id)_$(arg odometry_topic)"/>
         <remap from="~mandatory_stop" to="/mandatory_stop_to_planner"/>
         <remap from="~planning/trajectory" to = "/drone_$(arg drone_id)_planning/trajectory"/>
         <remap from="~planning/data_display" to = "/drone_$(arg drone_id)_planning/data_display"/>
-        <remap from="~planning/broadcast_traj_send" to = "/broadcast_traj_from_planner"/>
-        <remap from="~planning/broadcast_traj_recv" to = "/broadcast_traj_to_planner"/>
+        <remap from="~planning/broadcast_traj_send" to="$(eval '/swarm/trajectories' if arg('distributed_enabled') else '/broadcast_traj_from_planner')"/>
+        <remap from="~planning/broadcast_traj_recv" to="$(eval '/swarm/trajectories' if arg('distributed_enabled') else '/broadcast_traj_to_planner')"/>
         <remap from="~planning/heartbeat" to = "/drone_$(arg drone_id)_traj_server/heartbeat"/>
         <remap from="~grid_map/odom" to="/drone_$(arg drone_id)_$(arg odometry_topic)"/>
         <remap from="~grid_map/cloud" to="/drone_$(arg drone_id)_$(arg cloud_topic)"/>

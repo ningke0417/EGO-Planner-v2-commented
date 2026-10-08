@@ -2,6 +2,7 @@
 #include <plan_manage/ego_replan_fsm.h>
 
 #include <limits>
+#include <plan_manage/distributed_edges.h>
 
 namespace ego_planner
 {
@@ -53,6 +54,16 @@ namespace ego_planner
     have_trigger_ = !flag_realworld_experiment_;
 
     nh.param("formation/num", form_num_, -1);
+    nh.param("formation/distributed_enabled", distributed_enabled_, false);
+    if (distributed_enabled_)
+    {
+      if (form_num_ != 8)
+        throw std::runtime_error("distributed mode currently requires eight fixed slots");
+      initial_assignment_enabled_ = false;
+      subgroup_route_intent_feedback_enabled_ = false;
+      general_dynamic_topology_enabled_ = true;
+      manual_formation_split_ = true;
+    }
     if (form_num_ < planner_manager_->pp_.drone_id + 1)
     {
       ROS_ERROR("formation_num is smaller than the drone number, illegal!");
@@ -111,6 +122,15 @@ namespace ego_planner
 
     odom_sub_ = nh.subscribe("odom_world", 1, &EGOReplanFSM::odometryCallback, this);
     mandatory_stop_sub_ = nh.subscribe("mandatory_stop", 1, &EGOReplanFSM::mandatoryStopCallback, this);
+    if (distributed_enabled_)
+    {
+      topology_command_sub_ = nh.subscribe<FormationTopologyCommand>(
+          "/drone_" + std::to_string(planner_manager_->pp_.drone_id) +
+          "_formation_agent/topology", 1,
+          &EGOReplanFSM::distributedTopologyCallback, this);
+    }
+    else
+    {
     manual_split_sub_ = nh.subscribe<std_msgs::Bool>(
         "/formation_backend/manual_split", 1,
         &EGOReplanFSM::manualFormationSplitCallback, this);
@@ -126,6 +146,7 @@ namespace ego_planner
     split_progress_sync_scale_sub_ = nh.subscribe<std_msgs::Float64>(
         "/formation_backend/split_progress_sync_scale", 1,
         &EGOReplanFSM::splitProgressSyncScaleCallback, this);
+    }
     if (initial_assignment_enabled_)
       initial_assignment_sub_ = nh.subscribe<std_msgs::UInt32MultiArray>(
           "/formation_backend/initial_assignment", 1,
@@ -153,7 +174,9 @@ namespace ego_planner
             std::to_string(planner_manager_->pp_.drone_id) + "_group",
         1, true);
     topology_ack_pub_ = nh.advertise<FormationTopologyAck>(
-        "/formation_backend/topology_ack", 10, false);
+        distributed_enabled_
+            ? "/drone_" + std::to_string(planner_manager_->pp_.drone_id) + "/formation_applied"
+            : "/formation_backend/topology_ack", 10, false);
     assignment_ack_pub_ = nh.advertise<std_msgs::UInt32MultiArray>(
         "/formation_backend/assignment_ack", 20, false);
     subgroup_route_intent_status_pub_ = nh.advertise<std_msgs::String>(
@@ -177,6 +200,7 @@ namespace ego_planner
     publishFormationGroupState();
     publishSubgroupRouteIntentState(
         subgroup_route_intent_feedback_enabled_ ? "WAITING" : "DISABLED");
+    if (distributed_enabled_) expireDistributedTopology();
 
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
     {
@@ -603,7 +627,7 @@ namespace ego_planner
       ROS_ERROR("[FORMATION_BACKEND] Failed to apply exact formation edge mask");
     planner_manager_->setSplitSubgroupFormationWeightScale(split_formation_scale_);
     planner_manager_->setSplitProgressSyncWeightScale(split_progress_sync_scale_);
-    if (components_merged && have_odom_)
+    if (components_merged && have_odom_ && !distributed_enabled_)
       planner_manager_->beginMergeSynchronization(odom_pos_);
 
     if (!manual_formation_split_ && subgroup_route_intent_active_)
@@ -617,12 +641,49 @@ namespace ego_planner
 
     publishFormationGroupState();
     publishTopologyAck();
-    logEffectiveTopology(msg->reason);
+    if (topology_changed || edge_topology_changed || scale_changed)
+      logEffectiveTopology(msg->reason);
 
     if ((topology_changed || edge_topology_changed || scale_changed) && have_target_ &&
         (exec_state_ == EXEC_TRAJ || exec_state_ == REPLAN_TRAJ ||
          exec_state_ == GEN_NEW_TRAJ))
       changeFSMExecState(REPLAN_TRAJ, "TOPOLOGY_COMMAND");
+  }
+
+  void EGOReplanFSM::distributedTopologyCallback(
+      const FormationTopologyCommand::ConstPtr &msg)
+  {
+    const ros::Time now = ros::Time::now();
+    if (msg->header.stamp.isZero() ||
+        msg->header.stamp <= distributed_topology_stamp_ ||
+        (now - msg->header.stamp).toSec() > distributed_topology_timeout_ ||
+        (msg->header.stamp - now).toSec() > 0.05 ||
+        msg->mode != FormationTopologyCommand::SPLIT ||
+        msg->edge_count != distributed::kEdges ||
+        msg->edge_keep_mask >= (uint32_t{1} << distributed::kEdges) ||
+        !std::isfinite(msg->formation_scale) || msg->formation_scale < 0 ||
+        msg->progress_sync_scale != 0 ||
+        msg->components != distributed::components(msg->edge_keep_mask))
+      return;
+    FormationTopologyCommand::Ptr local(new FormationTopologyCommand(*msg));
+    // Local application order: never compare epochs produced by different agents.
+    local->epoch = topology_epoch_ + 1;
+    formationTopologyCommandCallback(local);
+    distributed_topology_stamp_ = msg->header.stamp;
+  }
+
+  void EGOReplanFSM::expireDistributedTopology()
+  {
+    FormationTopologyCommand::Ptr local(new FormationTopologyCommand);
+    local->epoch = topology_epoch_ + 1;
+    local->mode = FormationTopologyCommand::SPLIT;
+    local->edge_count = distributed::kEdges;
+    local->edge_keep_mask = 0;
+    local->components = distributed::components(0);
+    local->formation_scale = 0.15;
+    local->progress_sync_scale = 0;
+    local->reason = "LOCAL_AGENT_MISSING_OR_STALE";
+    formationTopologyCommandCallback(local);
   }
 
   void EGOReplanFSM::initialAssignmentCallback(
@@ -873,6 +934,13 @@ namespace ego_planner
       last_assignment_ack_stamp_ = now;
     }
 
+    if (distributed_enabled_ && !distributed_topology_stamp_.isZero() &&
+        (now - distributed_topology_stamp_).toSec() > distributed_topology_timeout_)
+    {
+      expireDistributedTopology();
+      distributed_topology_stamp_ = ros::Time();
+    }
+
     if (subgroup_route_intent_active_ &&
         (now - subgroup_route_intent_stamp_).toSec() >
             subgroup_route_intent_timeout_)
@@ -919,7 +987,7 @@ namespace ego_planner
 
     case SEQUENTIAL_START: // for swarm or single drone with drone_id = 0
     {
-      if (planner_manager_->pp_.drone_id <= 0 || (planner_manager_->pp_.drone_id >= 1 && have_recv_pre_agent_))
+      if (distributed_enabled_ || planner_manager_->pp_.drone_id <= 0 || (planner_manager_->pp_.drone_id >= 1 && have_recv_pre_agent_))
       {
         bool success = planFromGlobalTraj(10); // zx-todo
         if (success)

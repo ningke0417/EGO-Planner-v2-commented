@@ -27,6 +27,13 @@ source devel/setup.zsh
 roslaunch ego_planner formation_6uav_sparse_random.launch
 
 # 8-UAV 2x4 formation (1 m spacing)
+分布式开发版（默认仍为集中式，可显式切换）：
+```bash
+roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch coordination_mode:=distributed
+roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch coordination_mode:=centralized
+```
+编译、通信协议、测试和当前限制见 [分布式编队说明](docs/distributed-formation.md)。
+
 固定墙环境：
 roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch
 随机障碍环境：

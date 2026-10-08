@@ -1,4 +1,5 @@
 <launch>
+    <arg name="distributed_enabled" default="false"/>
     <!-- One member of the isolated six-UAV dynamic 2x3 formation. -->
     <arg name="drone_id"/>
     <arg name="init_x"/>
@@ -32,6 +33,7 @@
     <arg name="formation_drone7_x" default="-0.5"/><arg name="formation_drone7_y" default="1.5"/>
 
     <include file="$(find ego_planner)/launch/run_in_sim.launch">
+        <arg name="distributed_enabled" value="$(arg distributed_enabled)"/>
         <arg name="drone_id" value="$(arg drone_id)"/>
         <arg name="init_x" value="$(arg init_x)"/>
         <arg name="init_y" value="$(arg init_y)"/>

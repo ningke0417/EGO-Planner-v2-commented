@@ -1,4 +1,5 @@
 <launch>
+    <arg name="distributed_enabled" default="false"/>
     <!-- size of map, change the size inflate x, y, z according to your application -->
     <arg name="map_size_x"/>
     <arg name="map_size_y"/>
@@ -70,6 +71,7 @@
     <arg name="obj_num" value="10" />
     <!-- main algorithm params -->
     <include file="$(find ego_planner)/launch/advanced_param.xml">
+        <arg name="distributed_enabled" value="$(arg distributed_enabled)"/>
         <arg name="drone_id" value="$(arg drone_id)"/>
         <arg name="map_size_x_" value="$(arg map_size_x)"/>
         <arg name="map_size_y_" value="$(arg map_size_y)"/>

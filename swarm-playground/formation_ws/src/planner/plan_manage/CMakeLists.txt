@@ -28,6 +28,8 @@ add_message_files(
   FILES
   FormationTopologyCommand.msg
   FormationTopologyAck.msg
+  FormationEdgeEvidence.msg
+  FormationAgentState.msg
 )
 
 generate_messages(
@@ -71,6 +73,13 @@ target_link_libraries(ego_planner_node
 add_dependencies(ego_planner_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 add_executable(traj_server src/traj_server.cpp)
+add_executable(distributed_formation_visualizer src/distributed_formation_visualizer.cpp)
+add_dependencies(distributed_formation_visualizer ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(distributed_formation_visualizer ${catkin_LIBRARIES})
+add_executable(distributed_formation_agent src/distributed_formation_agent.cpp)
+add_dependencies(distributed_formation_agent ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(distributed_formation_agent
+  ${STARCONVEX_ROOT}/devel/lib/libstar_cvx.a ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 target_link_libraries(traj_server ${catkin_LIBRARIES})
 # add_dependencies(traj_server ${${PROJECT_NAME}_EXPORTED_TARGETS})
 
@@ -179,6 +188,7 @@ add_dependencies(formation_auto_split_bridge_8uav_node
   ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_distributed_edges test/test_distributed_edges.cpp)
   catkin_add_gtest(test_tristate_voxel_field
     test/test_tristate_voxel_field.cpp)
   if(TARGET test_tristate_voxel_field)

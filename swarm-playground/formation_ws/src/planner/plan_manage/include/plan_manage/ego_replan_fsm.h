@@ -91,6 +91,11 @@ namespace ego_planner
     bool subgroup_route_intent_feedback_enabled_;
     std::string subgroup_route_intent_topic_;
     bool initial_assignment_enabled_{false};
+    bool distributed_enabled_{false};
+    ros::Time distributed_topology_stamp_;
+    double distributed_topology_timeout_{1.5};
+    void distributedTopologyCallback(const FormationTopologyCommand::ConstPtr &msg);
+    void expireDistributedTopology();
     bool initial_assignment_received_{false};
     std::vector<Eigen::Vector3d> formation_slots_;
     std::vector<int> formation_assignment_;

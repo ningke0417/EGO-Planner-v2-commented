@@ -47,6 +47,9 @@ struct VoxelIndexHash {
 class SwarmObservedMap {
  public:
   SwarmObservedMap() : private_nh_("~") {
+    private_nh_.param("local_drone_id", local_drone_id_, -1);
+    if (local_drone_id_ < -1 || local_drone_id_ >= static_cast<int>(kUavCount))
+      throw std::runtime_error("invalid local_drone_id");
     private_nh_.param<std::string>("odom_topic_suffix", odom_suffix_,
                                    "visual_slam/odom");
     private_nh_.param<std::string>("cloud_topic_suffix", cloud_suffix_,
@@ -77,10 +80,15 @@ class SwarmObservedMap {
     }
 
     for (std::size_t id = 0; id < kUavCount; ++id) {
+      if (local_drone_id_ >= 0 && static_cast<int>(id) != local_drone_id_) continue;
       const std::string prefix = "/drone_" + std::to_string(id) + "_";
       odom_subscribers_[id] = nh_.subscribe<nav_msgs::Odometry>(
           prefix + odom_suffix_, 10,
           [this, id](const nav_msgs::Odometry::ConstPtr& message) {
+            if (local_drone_id_ >= 0 &&
+                (message->header.stamp.isZero() ||
+                 (ros::Time::now() - message->header.stamp).toSec() > odom_timeout_ ||
+                 (message->header.stamp - ros::Time::now()).toSec() > 0.05)) return;
             poses_[id] = *message;
             odom_received_[id] = true;
             odom_receipt_stamps_[id] = ros::Time::now();
@@ -142,6 +150,11 @@ class SwarmObservedMap {
   void cloudCallback(std::size_t id,
                      const sensor_msgs::PointCloud2::ConstPtr& message) {
     const ros::Time now = ros::Time::now();
+    if (local_drone_id_ >= 0 &&
+        (message->header.stamp.isZero() ||
+         message->header.stamp <= last_observation_stamp_ ||
+         (now - message->header.stamp).toSec() > odom_timeout_ ||
+         (message->header.stamp - now).toSec() > 0.05)) return;
     if (!last_cloud_updates_[id].isZero() &&
         (now - last_cloud_updates_[id]).toSec() < min_update_period_) {
       return;
@@ -234,7 +247,7 @@ class SwarmObservedMap {
     }
     last_cloud_updates_[id] = now;
     ++observation_counts_[id];
-    last_observation_stamp_ = now;
+    last_observation_stamp_ = local_drone_id_ >= 0 ? message->header.stamp : now;
     have_observation_ = true;
   }
 
@@ -257,6 +270,7 @@ class SwarmObservedMap {
   void publishMap(const ros::TimerEvent&) {
     if (!have_observation_) return;
     for (std::size_t id = 0; id < kUavCount; ++id) {
+      if (local_drone_id_ >= 0 && static_cast<int>(id) != local_drone_id_) continue;
       if (observation_counts_[id] < min_observations_per_uav_) {
         ROS_INFO_STREAM_THROTTLE(
             1.0, "[6UAV_OBSERVED_MAP] Warmup: waiting for "
@@ -276,6 +290,7 @@ class SwarmObservedMap {
   ros::NodeHandle nh_;
   ros::NodeHandle private_nh_;
   std::array<ros::Subscriber, kUavCount> odom_subscribers_;
+  int local_drone_id_{-1};
   std::array<ros::Subscriber, kUavCount> cloud_subscribers_;
   ros::Publisher occupied_publisher_;
   ros::Publisher free_publisher_;

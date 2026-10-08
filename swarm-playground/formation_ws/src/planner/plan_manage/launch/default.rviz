@@ -287,6 +287,16 @@ Visualization Manager:
       Value: true
     - Class: rviz/MarkerArray
       Enabled: true
+      Marker Topic: /distributed_formation_visualizer/markers
+      Name: distributed_applied_topology
+      Namespaces:
+        distributed_edges: true
+        distributed_edge_labels: true
+        distributed_legend: true
+      Queue Size: 10
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
       Marker Topic: /formation_backend/markers
       Name: formation_backend_topology
       Namespaces:

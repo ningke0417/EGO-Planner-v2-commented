@@ -138,8 +138,6 @@ void renderSensedPoints(const ros::TimerEvent& event) {
 
       _local_map.points.push_back(pt);
     }
-  } else {
-    return;
   }
 
   _local_map.width = _local_map.points.size();
@@ -148,6 +146,9 @@ void renderSensedPoints(const ros::TimerEvent& event) {
 
   pcl::toROSMsg(_local_map, _local_map_pcd);
   _local_map_pcd.header.frame_id = "map";
+  // This simulated measurement uses the latest odometry pose. An empty cloud
+  // is still a valid scan in free space and must carry its acquisition time.
+  _local_map_pcd.header.stamp = _odom.header.stamp;
 
   pub_cloud.publish(_local_map_pcd);
 }

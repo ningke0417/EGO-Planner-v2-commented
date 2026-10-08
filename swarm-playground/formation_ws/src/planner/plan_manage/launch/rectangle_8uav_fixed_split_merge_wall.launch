@@ -1,4 +1,6 @@
 <launch>
+    <arg name="coordination_mode" default="centralized" doc="centralized or distributed"/>
+    <arg name="distributed_enabled" value="$(eval {'centralized': False, 'distributed': True}[arg('coordination_mode')])"/>
     <!-- Eight-UAV dynamic split/merge experiment in the unchanged wall map. -->
     <arg name="rviz" default="true"/>
     <arg name="map_source" default="split_merge_wall"/>
@@ -23,7 +25,7 @@
     <arg name="second_wall_total_size_y" default="10.0"/>
     <arg name="second_wall_gap_size_y" default="1.8"/>
 
-    <include file="$(find swarm_bridge)/launch/bridge_udp.launch">
+    <include unless="$(arg distributed_enabled)" file="$(find swarm_bridge)/launch/bridge_udp.launch">
         <arg name="drone_id" value="999"/>
         <arg name="broadcast_ip" value="127.0.0.255"/>
     </include>
@@ -58,6 +60,7 @@
     <param name="/drone_6_pcl_render_node/full_360_sensing" value="false" type="bool"/>
     <param name="/drone_7_pcl_render_node/full_360_sensing" value="false" type="bool"/>
 
+    <group unless="$(arg distributed_enabled)">
     <node pkg="ego_planner" type="swarm_observed_map_8uav_node"
           name="swarm_observed_map_8uav" output="screen" required="true">
         <param name="odom_topic_suffix" value="$(arg odom_topic)"/>
@@ -189,38 +192,79 @@
         <rosparam param="formation_slot7">[-0.5, 1.5, 0.0]</rosparam>
     </node>
 
+    </group>
+
     <include file="$(find ego_planner)/launch/rectangle_8uav_member.launch">
+        <arg name="distributed_enabled" value="$(arg distributed_enabled)"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
         <arg name="drone_id" value="0"/><arg name="init_x" value="$(eval float(arg('start_x')) + 0.5)"/><arg name="init_y" value="-1.5"/>
         <arg name="map_size_x" value="$(arg map_size_x)"/><arg name="map_size_y" value="$(arg map_size_y)"/><arg name="map_size_z" value="$(arg map_size_z)"/><arg name="start_x" value="$(arg start_x)"/><arg name="goal_x" value="$(arg goal_x)"/><arg name="max_vel" value="$(arg max_vel)"/><arg name="formation_weight" value="$(arg formation_weight)"/>
     </include>
     <include file="$(find ego_planner)/launch/rectangle_8uav_member.launch">
+        <arg name="distributed_enabled" value="$(arg distributed_enabled)"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
         <arg name="drone_id" value="1"/><arg name="init_x" value="$(eval float(arg('start_x')) + 0.5)"/><arg name="init_y" value="-0.5"/>
         <arg name="map_size_x" value="$(arg map_size_x)"/><arg name="map_size_y" value="$(arg map_size_y)"/><arg name="map_size_z" value="$(arg map_size_z)"/><arg name="start_x" value="$(arg start_x)"/><arg name="goal_x" value="$(arg goal_x)"/><arg name="max_vel" value="$(arg max_vel)"/><arg name="formation_weight" value="$(arg formation_weight)"/>
     </include>
     <include file="$(find ego_planner)/launch/rectangle_8uav_member.launch">
+        <arg name="distributed_enabled" value="$(arg distributed_enabled)"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
         <arg name="drone_id" value="2"/><arg name="init_x" value="$(eval float(arg('start_x')) + 0.5)"/><arg name="init_y" value="0.5"/>
         <arg name="map_size_x" value="$(arg map_size_x)"/><arg name="map_size_y" value="$(arg map_size_y)"/><arg name="map_size_z" value="$(arg map_size_z)"/><arg name="start_x" value="$(arg start_x)"/><arg name="goal_x" value="$(arg goal_x)"/><arg name="max_vel" value="$(arg max_vel)"/><arg name="formation_weight" value="$(arg formation_weight)"/>
     </include>
     <include file="$(find ego_planner)/launch/rectangle_8uav_member.launch">
+        <arg name="distributed_enabled" value="$(arg distributed_enabled)"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
         <arg name="drone_id" value="3"/><arg name="init_x" value="$(eval float(arg('start_x')) + 0.5)"/><arg name="init_y" value="1.5"/>
         <arg name="map_size_x" value="$(arg map_size_x)"/><arg name="map_size_y" value="$(arg map_size_y)"/><arg name="map_size_z" value="$(arg map_size_z)"/><arg name="start_x" value="$(arg start_x)"/><arg name="goal_x" value="$(arg goal_x)"/><arg name="max_vel" value="$(arg max_vel)"/><arg name="formation_weight" value="$(arg formation_weight)"/>
     </include>
     <include file="$(find ego_planner)/launch/rectangle_8uav_member.launch">
+        <arg name="distributed_enabled" value="$(arg distributed_enabled)"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
         <arg name="drone_id" value="4"/><arg name="init_x" value="$(eval float(arg('start_x')) - 0.5)"/><arg name="init_y" value="-1.5"/>
         <arg name="map_size_x" value="$(arg map_size_x)"/><arg name="map_size_y" value="$(arg map_size_y)"/><arg name="map_size_z" value="$(arg map_size_z)"/><arg name="start_x" value="$(arg start_x)"/><arg name="goal_x" value="$(arg goal_x)"/><arg name="max_vel" value="$(arg max_vel)"/><arg name="formation_weight" value="$(arg formation_weight)"/>
     </include>
     <include file="$(find ego_planner)/launch/rectangle_8uav_member.launch">
+        <arg name="distributed_enabled" value="$(arg distributed_enabled)"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
         <arg name="drone_id" value="5"/><arg name="init_x" value="$(eval float(arg('start_x')) - 0.5)"/><arg name="init_y" value="-0.5"/>
         <arg name="map_size_x" value="$(arg map_size_x)"/><arg name="map_size_y" value="$(arg map_size_y)"/><arg name="map_size_z" value="$(arg map_size_z)"/><arg name="start_x" value="$(arg start_x)"/><arg name="goal_x" value="$(arg goal_x)"/><arg name="max_vel" value="$(arg max_vel)"/><arg name="formation_weight" value="$(arg formation_weight)"/>
     </include>
     <include file="$(find ego_planner)/launch/rectangle_8uav_member.launch">
+        <arg name="distributed_enabled" value="$(arg distributed_enabled)"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
         <arg name="drone_id" value="6"/><arg name="init_x" value="$(eval float(arg('start_x')) - 0.5)"/><arg name="init_y" value="0.5"/>
         <arg name="map_size_x" value="$(arg map_size_x)"/><arg name="map_size_y" value="$(arg map_size_y)"/><arg name="map_size_z" value="$(arg map_size_z)"/><arg name="start_x" value="$(arg start_x)"/><arg name="goal_x" value="$(arg goal_x)"/><arg name="max_vel" value="$(arg max_vel)"/><arg name="formation_weight" value="$(arg formation_weight)"/>
     </include>
     <include file="$(find ego_planner)/launch/rectangle_8uav_member.launch">
+        <arg name="distributed_enabled" value="$(arg distributed_enabled)"/>
+        <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
         <arg name="drone_id" value="7"/><arg name="init_x" value="$(eval float(arg('start_x')) - 0.5)"/><arg name="init_y" value="1.5"/>
         <arg name="map_size_x" value="$(arg map_size_x)"/><arg name="map_size_y" value="$(arg map_size_y)"/><arg name="map_size_z" value="$(arg map_size_z)"/><arg name="start_x" value="$(arg start_x)"/><arg name="goal_x" value="$(arg goal_x)"/><arg name="max_vel" value="$(arg max_vel)"/><arg name="formation_weight" value="$(arg formation_weight)"/>
     </include>
 
+    <!-- Passive observer only: its failure must not stop the experiment. -->
+    <node if="$(arg distributed_enabled)" pkg="ego_planner"
+          type="distributed_formation_visualizer" name="distributed_formation_visualizer"
+          output="log">
+        <param name="odom_topic_suffix" value="$(arg odom_topic)"/>
+        <param name="show_cut_edges" value="true"/>
+    </node>
     <include if="$(arg rviz)" file="$(find ego_planner)/launch/rviz.launch"/>
 </launch>
