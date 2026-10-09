@@ -33,6 +33,20 @@ struct Lease {
     return session != 0 && now >= stamp - 0.05 && now - stamp <= ttl;
   }
 };
+inline bool localEdgeEvidenceSafe(bool kept, bool visibility_reconnected,
+                                  double distance, double visibility,
+                                  double score, double split_distance,
+                                  double reconnect_distance, double split_score) {
+  if (!std::isfinite(distance) || !std::isfinite(visibility) ||
+      !std::isfinite(score) || split_distance <= 0.0 ||
+      reconnect_distance <= 0.0 ||
+      split_score < 0.0 || split_score > 1.0 || visibility <= 0.0)
+    return false;
+  if (distance > (kept ? split_distance : reconnect_distance)) return false;
+  // As in centralized weak recovery, reconnection is a local visibility and
+  // distance decision. Overlap becomes a split signal after it has recovered.
+  return !kept || visibility_reconnected || score >= split_score;
+}
 class EdgeTable {
  public:
   bool update(int observer, int peer, uint64_t session, uint64_t sequence,

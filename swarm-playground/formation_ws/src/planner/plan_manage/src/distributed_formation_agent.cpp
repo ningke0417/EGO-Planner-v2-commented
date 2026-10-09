@@ -27,19 +27,24 @@ class Agent {
     nh_.param("evidence_timeout", ttl_, 1.5);
     nh_.param("map_timeout", map_timeout_, 1.0);
     nh_.param("reconnect_hold", reconnect_hold_, 0.8);
+    nh_.param("weak_reconnect_hold", weak_reconnect_hold_, 0.3);
     nh_.param("cut_hold", cut_hold_, 1.0);
     nh_.param("resolution", resolution_, 0.2);
     nh_.param("inflation", inflation_, 0.2);
     nh_.param("formation_scale", formation_scale_, 0.15);
     nh_.param("split_distance", split_distance_, 1.8);
     nh_.param("merge_distance", merge_distance_, 1.7);
+    nh_.param("weak_reconnect_distance", weak_reconnect_distance_, 3.0);
+    nh_.param("weak_formation_scale", weak_formation_scale_, 0.22);
     nh_.param("split_score", split_score_, 0.34);
-    nh_.param("merge_score", merge_score_, 0.70);
     if (id_ < 0 || id_ >= de::kAgents || ttl_ <= 0 ||
-        map_timeout_ <= 0 || reconnect_hold_ < 0 || cut_hold_ < 0 ||
+        map_timeout_ <= 0 || reconnect_hold_ < 0 ||
+        weak_reconnect_hold_ < 0 || cut_hold_ < 0 ||
         resolution_ <= 0 || inflation_ < 0 || formation_scale_ < 0 ||
         merge_distance_ <= 0 || split_distance_ < merge_distance_ ||
-        split_score_ < 0 || merge_score_ < split_score_ || merge_score_ > 1)
+        weak_reconnect_distance_ < merge_distance_ ||
+        weak_formation_scale_ < formation_scale_ ||
+        split_score_ < 0 || split_score_ > 1)
       throw std::runtime_error("invalid distributed agent parameters");
     geometry_.delta_floor = -0.5;
     geometry_.delta_roof = 0.5;
@@ -67,16 +72,21 @@ class Agent {
     value.sequence = ++state_sequence_;
     value.drone_id = id_;
     value.position = {{p.x, p.y, p.z}};
+    value.startup_ready = local_startup_ready_;
     state(ego_planner::FormationAgentState::ConstPtr(new ego_planner::FormationAgentState(value)));
     state_pub_.publish(value);
   }
   void state(const ego_planner::FormationAgentState::ConstPtr& msg) {
     if (msg->drone_id >= de::kAgents) return;
     for (double value : msg->position) if (!std::isfinite(value)) return;
+    const double now = ros::Time::now().toSec();
     auto& lease = state_leases_[msg->drone_id];
     if (lease.accept(msg->session, msg->sequence, msg->header.stamp.toSec(),
-                     ros::Time::now().toSec(), ttl_, true))
+                     now, ttl_, true))
       positions_[msg->drone_id] = {msg->position[0], msg->position[1], msg->position[2]};
+    startup_leases_[msg->drone_id].accept(
+        msg->session, msg->sequence, msg->header.stamp.toSec(), now, ttl_,
+        msg->startup_ready);
   }
   void evidence(const ego_planner::FormationEdgeEvidence::ConstPtr& msg) {
     if (msg->assignment_generation != 0 ||
@@ -150,13 +160,22 @@ class Agent {
       bool safe = local_ready && state_leases_[peer].fresh(now.toSec(), ttl_);
       if (safe) {
         distance = norm(subtract(positions_[id_], positions_[peer]));
-        safe = distance <= (kept_[edge] ? split_distance_ : merge_distance_);
+        const double limit = !kept_[edge] || weak_reconnected_[edge]
+                                 ? weak_reconnect_distance_
+                                 : split_distance_;
+        safe = distance <= limit;
       }
       if (safe) {
         try {
           visibility = corridor(positions_[id_], positions_[peer]) ? 1.0 : 0.0;
           if (visibility > 0) score = overlap(positions_[id_], positions_[peer]);
-          safe = visibility > 0 && score >= (kept_[edge] ? split_score_ : merge_score_);
+          safe = de::localEdgeEvidenceSafe(
+              kept_[edge], weak_reconnected_[edge] ||
+                               visibility_reconnected_[edge],
+              distance, visibility, score,
+              weak_reconnected_[edge] ? weak_reconnect_distance_
+                                      : split_distance_,
+              weak_reconnect_distance_, split_score_);
         } catch (const std::exception& error) {
           ROS_WARN_THROTTLE(2.0, "Local edge geometry unavailable: %s", error.what());
           safe = false;
@@ -165,11 +184,28 @@ class Agent {
       if (!safe) {
         if (kept_[edge]) cut_since_[edge] = now;
         kept_[edge] = false;
+        weak_reconnected_[edge] = false;
+        visibility_reconnected_[edge] = false;
         ready_since_[edge] = ros::Time();
       } else if (!kept_[edge]) {
         if (ready_since_[edge].isZero()) ready_since_[edge] = now;
-        kept_[edge] = (now-ready_since_[edge]).toSec() >= reconnect_hold_ &&
-            (cut_since_[edge].isZero() || (now-cut_since_[edge]).toSec() >= cut_hold_);
+        // Match centralized weak recovery's short visibility window without
+        // weakening the ordinary close-range reconnect debounce.
+        const double required_hold = distance > merge_distance_
+                                         ? weak_reconnect_hold_
+                                         : reconnect_hold_;
+        if ((now-ready_since_[edge]).toSec() >= required_hold &&
+            (cut_since_[edge].isZero() ||
+             (now-cut_since_[edge]).toSec() >= cut_hold_)) {
+          kept_[edge] = true;
+          weak_reconnected_[edge] = distance > merge_distance_;
+          visibility_reconnected_[edge] = !weak_reconnected_[edge];
+        }
+      } else if (weak_reconnected_[edge] && distance <= merge_distance_) {
+        weak_reconnected_[edge] = false;
+        visibility_reconnected_[edge] = true;
+      } else if (visibility_reconnected_[edge] && score >= split_score_) {
+        visibility_reconnected_[edge] = false;
       }
       ego_planner::FormationEdgeEvidence value;
       value.header.stamp = now;
@@ -189,17 +225,39 @@ class Agent {
       evaluate(now);
       last_evaluation_ = now;
     }
+    const uint32_t mask = table_.mask(now.toSec(), ttl_);
+    constexpr uint32_t full_mask =
+        (uint32_t{1} << de::kEdges) - uint32_t{1};
+    if (!local_startup_ready_ && mask == full_mask) {
+      local_startup_ready_ = true;
+      ROS_INFO("Distributed startup: local full-edge evidence is ready");
+    }
+    if (!startup_ready_ && local_startup_ready_) {
+      bool all_ready = true;
+      for (const auto& lease : startup_leases_)
+        all_ready = all_ready && lease.keep && lease.fresh(now.toSec(), ttl_);
+      if (all_ready) {
+        startup_ready_ = true;
+        ROS_INFO("Distributed startup barrier passed for all %d agents",
+                 de::kAgents);
+      }
+    }
     ego_planner::FormationTopologyCommand command;
     command.header.stamp = ros::Time::now();
     command.epoch = command.header.stamp.toNSec();
     // Always use the optimizer's relative-edge branch, including a fully connected graph.
     command.mode = command.SPLIT;
     command.edge_count = de::kEdges;
-    command.edge_keep_mask = table_.mask(command.header.stamp.toSec(), ttl_);
+    command.edge_keep_mask = mask;
     command.components = de::components(command.edge_keep_mask);
-    command.formation_scale = formation_scale_;
+    const bool weak_recovery = std::any_of(
+        weak_reconnected_.begin(), weak_reconnected_.end(),
+        [](bool value) { return value; });
+    command.formation_scale = weak_recovery ? weak_formation_scale_
+                                            : formation_scale_;
     command.progress_sync_scale = 0.0;
-    command.reason = "DISTRIBUTED_ENDPOINT_LEASES";
+    command.reason = startup_ready_ ? "DISTRIBUTED_ENDPOINT_LEASES"
+                                    : "DISTRIBUTED_STARTUP_WAIT";
     command_pub_.publish(command);
   }
   ros::NodeHandle nh_;
@@ -207,18 +265,24 @@ class Agent {
   ros::Publisher state_pub_, edge_pub_, command_pub_;
   ros::Timer timer_;
   int id_;
-  double ttl_, map_timeout_, reconnect_hold_, cut_hold_, resolution_, inflation_;
-  double formation_scale_, split_distance_, merge_distance_, split_score_, merge_score_;
+  double ttl_, map_timeout_, reconnect_hold_, weak_reconnect_hold_, cut_hold_;
+  double resolution_, inflation_;
+  double formation_scale_, split_distance_, merge_distance_, split_score_;
+  double weak_reconnect_distance_, weak_formation_scale_;
   uint64_t session_, state_sequence_{0}, edge_sequence_{0};
   std::array<Vec3, de::kAgents> positions_{};
   std::array<de::Lease, de::kAgents> state_leases_{};
+  std::array<de::Lease, de::kAgents> startup_leases_{};
   de::EdgeTable table_;
   std::array<bool, de::kEdges> kept_{};
+  std::array<bool, de::kEdges> weak_reconnected_{};
+  std::array<bool, de::kEdges> visibility_reconnected_{};
   std::array<ros::Time, de::kEdges> ready_since_{}, cut_since_{};
   pcl::PointCloud<pcl::PointXYZ> occupied_, free_;
   ros::Time occupied_stamp_, free_stamp_, field_stamp_, last_evaluation_;
   std::unique_ptr<VoxelObstacleField> field_;
   starconvex_adapter::GeometryOptions geometry_;
+  bool local_startup_ready_{false}, startup_ready_{false};
 };
 }
 int main(int argc, char** argv) {

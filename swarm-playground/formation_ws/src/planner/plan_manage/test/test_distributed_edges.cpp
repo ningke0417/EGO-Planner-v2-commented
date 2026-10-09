@@ -50,6 +50,30 @@ TEST(DistributedEdges, DeterministicComponents) {
   EXPECT_EQ("{0,1,2,3,4,5,6,7}",components(1023));
   EXPECT_EQ("{0,1,2,3}|{4,5,6,7}",components(63));
 }
+TEST(DistributedEdges, VisibilityReconnectDoesNotRequireOverlap) {
+  EXPECT_TRUE(localEdgeEvidenceSafe(false, false, 1.6, 1.0, 0.0,
+                                    1.8, 1.7, 0.34));
+  EXPECT_FALSE(localEdgeEvidenceSafe(false, false, 1.71, 1.0, 1.0,
+                                     1.8, 1.7, 0.34));
+  EXPECT_FALSE(localEdgeEvidenceSafe(false, false, 1.0, 0.0, 1.0,
+                                     1.8, 1.7, 0.34));
+  EXPECT_TRUE(localEdgeEvidenceSafe(true, true, 1.7, 1.0, 0.0,
+                                    1.8, 1.7, 0.34));
+  EXPECT_FALSE(localEdgeEvidenceSafe(true, false, 1.7, 1.0, 0.33,
+                                     1.8, 1.7, 0.34));
+  EXPECT_TRUE(localEdgeEvidenceSafe(true, false, 1.7, 1.0, 0.34,
+                                    1.8, 1.7, 0.34));
+}
+TEST(DistributedEdges, WeakReconnectAllowsVisibleRecoveryAtThreeMeters) {
+  EXPECT_TRUE(localEdgeEvidenceSafe(false, false, 2.5, 1.0, 0.0,
+                                    1.8, 3.0, 0.34));
+  EXPECT_TRUE(localEdgeEvidenceSafe(true, true, 2.5, 1.0, 0.0,
+                                    3.0, 3.0, 0.34));
+  EXPECT_FALSE(localEdgeEvidenceSafe(true, true, 2.5, 0.0, 1.0,
+                                     3.0, 3.0, 0.34));
+  EXPECT_FALSE(localEdgeEvidenceSafe(true, false, 1.9, 1.0, 1.0,
+                                     1.8, 3.0, 0.34));
+}
 TEST(DistributedEdges, IndependentTablesConvergeDespiteDeliveryOrder) {
   EdgeTable a,b;
   for (int e=0; e<kEdges; ++e) {

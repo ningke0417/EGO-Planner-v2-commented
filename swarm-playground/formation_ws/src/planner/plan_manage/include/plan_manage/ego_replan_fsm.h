@@ -92,8 +92,11 @@ namespace ego_planner
     std::string subgroup_route_intent_topic_;
     bool initial_assignment_enabled_{false};
     bool distributed_enabled_{false};
+    bool distributed_startup_ready_{false};
     ros::Time distributed_topology_stamp_;
+    ros::Time distributed_startup_begin_;
     double distributed_topology_timeout_{1.5};
+    double distributed_startup_timeout_{15.0};
     void distributedTopologyCallback(const FormationTopologyCommand::ConstPtr &msg);
     void expireDistributedTopology();
     bool initial_assignment_received_{false};

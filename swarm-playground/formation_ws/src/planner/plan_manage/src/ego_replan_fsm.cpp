@@ -55,10 +55,15 @@ namespace ego_planner
 
     nh.param("formation/num", form_num_, -1);
     nh.param("formation/distributed_enabled", distributed_enabled_, false);
+    nh.param("formation/distributed_startup_timeout",
+             distributed_startup_timeout_, 15.0);
     if (distributed_enabled_)
     {
       if (form_num_ != 8)
         throw std::runtime_error("distributed mode currently requires eight fixed slots");
+      if (distributed_startup_timeout_ <= 0.0)
+        throw std::runtime_error("distributed startup timeout must be positive");
+      distributed_startup_begin_ = ros::Time::now();
       initial_assignment_enabled_ = false;
       subgroup_route_intent_feedback_enabled_ = false;
       general_dynamic_topology_enabled_ = true;
@@ -663,8 +668,25 @@ namespace ego_planner
         msg->edge_keep_mask >= (uint32_t{1} << distributed::kEdges) ||
         !std::isfinite(msg->formation_scale) || msg->formation_scale < 0 ||
         msg->progress_sync_scale != 0 ||
-        msg->components != distributed::components(msg->edge_keep_mask))
+        msg->components != distributed::components(msg->edge_keep_mask) ||
+        (msg->reason != "DISTRIBUTED_STARTUP_WAIT" &&
+         msg->reason != "DISTRIBUTED_ENDPOINT_LEASES"))
       return;
+    constexpr uint32_t full_mask =
+        (uint32_t{1} << distributed::kEdges) - uint32_t{1};
+    if (!distributed_startup_ready_ &&
+        msg->reason == "DISTRIBUTED_ENDPOINT_LEASES")
+    {
+      // The barrier transition itself must still carry the complete graph.
+      if (msg->edge_keep_mask != full_mask)
+      {
+        ROS_ERROR_THROTTLE(
+            1.0, "Reject distributed startup release without a full edge mask");
+        return;
+      }
+      distributed_startup_ready_ = true;
+      ROS_INFO("[DISTRIBUTED_STARTUP] barrier passed; target flight enabled");
+    }
     FormationTopologyCommand::Ptr local(new FormationTopologyCommand(*msg));
     // Local application order: never compare epochs produced by different agents.
     local->epoch = topology_epoch_ + 1;
@@ -978,6 +1000,25 @@ namespace ego_planner
     {
       if (!have_target_ || !have_trigger_ || !initial_assignment_received_)
         goto force_return; // return;
+      if (distributed_enabled_ && !distributed_startup_ready_)
+      {
+        const double elapsed = distributed_startup_begin_.isZero()
+                                   ? 0.0
+                                   : (now - distributed_startup_begin_).toSec();
+        if (elapsed >= distributed_startup_timeout_)
+          ROS_ERROR_THROTTLE(
+              2.0,
+              "[DISTRIBUTED_STARTUP] not ready after %.1f s; holding position "
+              "(fail-closed)",
+              elapsed);
+        else
+          ROS_WARN_THROTTLE(
+              2.0,
+              "[DISTRIBUTED_STARTUP] waiting for all-agent full-edge barrier "
+              "(%.1f/%.1f s)",
+              elapsed, distributed_startup_timeout_);
+        goto force_return;
+      }
       else
       {
         changeFSMExecState(SEQUENTIAL_START, "FSM");

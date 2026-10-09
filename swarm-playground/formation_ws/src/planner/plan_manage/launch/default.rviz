@@ -266,10 +266,7 @@ Visualization Manager:
       Marker Topic: /formation_backend_visualizer_6uav/markers
       Name: six_uav_backend_topology
       Namespaces:
-        six_uav_backend_connected_edges: true
-        six_uav_backend_group_halos: true
-        six_uav_backend_group_labels: true
-        six_uav_backend_state: true
+        {}
       Queue Size: 10
       Value: true
     - Class: rviz/MarkerArray
@@ -277,12 +274,7 @@ Visualization Manager:
       Marker Topic: /formation_backend_visualizer_8uav/markers
       Name: eight_uav_backend_topology
       Namespaces:
-        six_uav_backend_connected_edges: true
-        six_uav_backend_cut_edges: true
-        six_uav_backend_group_halos: true
-        six_uav_backend_group_labels: true
-        six_uav_backend_state: true
-        six_uav_backend_unknown_edges: true
+        {}
       Queue Size: 10
       Value: true
     - Class: rviz/MarkerArray
@@ -291,7 +283,6 @@ Visualization Manager:
       Name: distributed_applied_topology
       Namespaces:
         distributed_edges: true
-        distributed_edge_labels: true
         distributed_legend: true
       Queue Size: 10
       Value: true
@@ -1156,7 +1147,7 @@ Visualization Manager:
               Marker Topic: /drone_6_ego_planner_node/optimal_list
               Name: optimal_traj
               Namespaces:
-                {}
+                "": true
               Queue Size: 100
               Value: true
             - Class: rviz/Marker
@@ -1240,7 +1231,7 @@ Visualization Manager:
               Marker Topic: /drone_6_odom_visualization/robot
               Name: robot
               Namespaces:
-                {}
+                mesh: true
               Queue Size: 100
               Value: true
             - Class: rviz/Image
@@ -1284,7 +1275,7 @@ Visualization Manager:
               Marker Topic: /drone_7_ego_planner_node/optimal_list
               Name: optimal_traj
               Namespaces:
-                {}
+                "": true
               Queue Size: 100
               Value: true
             - Class: rviz/Marker
@@ -1368,7 +1359,7 @@ Visualization Manager:
               Marker Topic: /drone_7_odom_visualization/robot
               Name: robot
               Namespaces:
-                {}
+                mesh: true
               Queue Size: 100
               Value: true
             - Class: rviz/Image
@@ -5808,8 +5799,8 @@ Visualization Manager:
   Value: true
   Views:
     Current:
-      Class: rviz/ThirdPersonFollower
-      Distance: 40.47028732299805
+      Class: rviz/Orbit
+      Distance: 20.134401321411133
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -5817,17 +5808,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: -9.685125350952148
-        Y: -1.6107563972473145
-        Z: -11.999991416931152
+        X: -4.7901082038879395
+        Y: -0.6352322697639465
+        Z: 0.8174818158149719
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.4147964715957642
-      Target Frame: my_view
-      Yaw: 3.1474010944366455
+      Pitch: 1.4149998426437378
+      Target Frame: world
+      Yaw: 3.1349985599517822
     Saved:
       - Class: rviz/FPS
         Enable Stereo Rendering:

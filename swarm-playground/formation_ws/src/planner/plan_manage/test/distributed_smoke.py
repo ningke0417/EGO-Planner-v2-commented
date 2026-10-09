@@ -21,11 +21,14 @@ def main():
     args = parser.parse_args()
     rospy.init_node('distributed_smoke', anonymous=True)
     applied, commands, trajectories = {}, {}, set()
+    startup_ready = set()
     subscribers = []
     def applied_callback(msg, agent):
         applied[agent] = (time.monotonic(), msg)
     def command_callback(msg, agent):
         commands[agent] = (time.monotonic(), msg)
+        if msg.reason == 'DISTRIBUTED_ENDPOINT_LEASES':
+            startup_ready.add(agent)
     for agent in range(8):
         subscribers.append(rospy.Subscriber(
             '/drone_%d/formation_applied' % agent, FormationTopologyAck,
@@ -37,13 +40,16 @@ def main():
                                        lambda msg: trajectories.add(msg.drone_id)))
     deadline = time.monotonic() + args.timeout
     while time.monotonic() < deadline and (
-            len(applied) != 8 or len(commands) != 8 or len(trajectories) != 8 or
+            len(applied) != 8 or len(commands) != 8 or len(startup_ready) != 8 or
+            len(trajectories) != 8 or
             not any(value[1].edge_keep_mask for value in applied.values()) or
             (args.allow_fault_injection and
              (0 not in applied or not applied[0][1].edge_keep_mask & 65))):
         time.sleep(0.1)
     assert len(applied) == 8, 'Missing applied topology: %s' % sorted(applied)
     assert len(commands) == 8, 'Missing local agents: %s' % sorted(commands)
+    assert startup_ready == set(range(8)), (
+        'Startup barrier not released: %s' % sorted(startup_ready))
     assert trajectories == set(range(8)), 'Missing planners: %s' % sorted(trajectories)
     assert any(value[1].edge_keep_mask for value in applied.values()), 'No edge ever connected'
     if args.allow_fault_injection:
@@ -64,7 +70,8 @@ def main():
         planner = '/drone_%d_ego_planner_node' % agent
         assert planner not in subscribers_by_topic.get('/formation_backend/topology_command', [])
         assert planner not in subscribers_by_topic.get('/formation_backend/initial_assignment', [])
-    print(json.dumps({'graph': 'PASS', 'planners': sorted(trajectories),
+    print(json.dumps({'graph': 'PASS', 'startup_barrier': 'PASS',
+                      'planners': sorted(trajectories),
                       'masks': {i: value[1].edge_keep_mask for i, value in applied.items()}}),
           flush=True)
     if not args.allow_fault_injection:

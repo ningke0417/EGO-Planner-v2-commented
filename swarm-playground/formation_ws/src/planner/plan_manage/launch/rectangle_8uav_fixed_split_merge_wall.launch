@@ -50,15 +50,15 @@
         <param name="random_seed" value="1"/>
     </node>
 
-    <!-- Keep each vehicle's local obstacle map independent of its yaw. -->
-    <param name="/drone_0_pcl_render_node/full_360_sensing" value="false" type="bool"/>
-    <param name="/drone_1_pcl_render_node/full_360_sensing" value="false" type="bool"/>
-    <param name="/drone_2_pcl_render_node/full_360_sensing" value="false" type="bool"/>
-    <param name="/drone_3_pcl_render_node/full_360_sensing" value="false" type="bool"/>
-    <param name="/drone_4_pcl_render_node/full_360_sensing" value="false" type="bool"/>
-    <param name="/drone_5_pcl_render_node/full_360_sensing" value="false" type="bool"/>
-    <param name="/drone_6_pcl_render_node/full_360_sensing" value="false" type="bool"/>
-    <param name="/drone_7_pcl_render_node/full_360_sensing" value="false" type="bool"/>
+    <!-- Keep the renderer and observed-map model aligned at 360 degrees. -->
+    <param name="/drone_0_pcl_render_node/full_360_sensing" value="true" type="bool"/>
+    <param name="/drone_1_pcl_render_node/full_360_sensing" value="true" type="bool"/>
+    <param name="/drone_2_pcl_render_node/full_360_sensing" value="true" type="bool"/>
+    <param name="/drone_3_pcl_render_node/full_360_sensing" value="true" type="bool"/>
+    <param name="/drone_4_pcl_render_node/full_360_sensing" value="true" type="bool"/>
+    <param name="/drone_5_pcl_render_node/full_360_sensing" value="true" type="bool"/>
+    <param name="/drone_6_pcl_render_node/full_360_sensing" value="true" type="bool"/>
+    <param name="/drone_7_pcl_render_node/full_360_sensing" value="true" type="bool"/>
 
     <group unless="$(arg distributed_enabled)">
     <node pkg="ego_planner" type="swarm_observed_map_8uav_node"
@@ -68,6 +68,7 @@
         <param name="frame_id" value="world"/>
         <param name="resolution" value="0.20"/>
         <param name="sensor_range" value="5.0"/>
+        <param name="horizontal_fov" value="6.283185307179586"/>
         <param name="azimuth_step" value="0.04"/>
         <param name="elevation_step" value="0.05"/>
         <param name="map_size_x" value="$(arg map_size_x)"/>

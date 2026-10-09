@@ -59,6 +59,7 @@
             <param name="local_drone_id" value="$(arg drone_id)"/>
             <param name="odom_topic_suffix" value="$(arg odom_topic)"/>
             <param name="resolution" value="0.2"/>
+            <param name="horizontal_fov" value="6.283185307179586"/>
             <param name="azimuth_step" value="0.04"/>
             <param name="elevation_step" value="0.05"/>
             <param name="map_size_x" value="$(arg map_size_x)"/>
@@ -71,6 +72,9 @@
               name="drone_$(arg drone_id)_formation_agent" output="log">
             <param name="drone_id" value="$(arg drone_id)"/>
             <param name="inflation" value="$(arg safety_distance)"/>
+            <param name="weak_reconnect_distance" value="3.0"/>
+            <param name="weak_reconnect_hold" value="0.3"/>
+            <param name="weak_formation_scale" value="0.22"/>
             <remap from="~odom" to="/drone_$(arg drone_id)_$(arg odom_topic)"/>
             <remap from="~occupied" to="/drone_$(arg drone_id)/observed_occupied"/>
             <remap from="~free" to="/drone_$(arg drone_id)/observed_free"/>
