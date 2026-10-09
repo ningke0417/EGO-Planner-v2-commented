@@ -41,3 +41,14 @@ roslaunch ego_planner rectangle_8uav_sparse_random.launch
 
 从github上把最新更新/在其他电脑上传上去的更新同步到本地电脑：
 git pull origin criterion-validation
+
+
+cd ~/Codes/EGO-Planner-criterion-validation/swarm-playground/formation_ws
+source /opt/ros/noetic/setup.zsh
+source devel/setup.zsh
+分布式固定墙环境：
+roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch \
+  coordination_mode:=distributed
+分布式随机障碍物场景：
+roslaunch ego_planner rectangle_8uav_sparse_random.launch \              
+  coordination_mode:=distributed
