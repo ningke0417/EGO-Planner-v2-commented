@@ -43,3 +43,4 @@ src99/
 # Test results
 test_results/
 **/test_results/
+analysis/
