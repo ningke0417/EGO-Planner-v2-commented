@@ -24,6 +24,7 @@
 #include <quadrotor_msgs/GoalSet.h>
 #include <traj_utils/DataDisp.h>
 #include <plan_manage/planner_manager.h>
+#include <plan_manage/distributed_edges.h>
 #include <traj_utils/planning_visualization.h>
 #include <traj_utils/PolyTraj.h>
 #include <traj_utils/MINCOTraj.h>
@@ -103,6 +104,7 @@ namespace ego_planner
     std::vector<Eigen::Vector3d> formation_slots_;
     std::vector<int> formation_assignment_;
     uint32_t assignment_generation_{0};
+    std::array<uint32_t, distributed::kColumns> distributed_assignment_versions_{};
     bool subgroup_route_intent_active_{false};
     bool dynamic_topology_active_{false};
     std::vector<int> dynamic_formation_groups_;
@@ -111,6 +113,7 @@ namespace ego_planner
     std::string topology_components_{"INTACT"};
     uint32_t topology_edge_count_{0};
     uint32_t topology_edge_keep_mask_{0};
+    uint32_t topology_weak_edge_mask_{0};
     double subgroup_route_intent_angle_{0.0};
     double subgroup_route_intent_gain_{0.0};
     double subgroup_route_intent_timeout_{1.0};

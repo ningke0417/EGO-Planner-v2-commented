@@ -460,6 +460,14 @@ namespace ego_planner
     ack.components = topology_components_;
     ack.edge_count = topology_edge_count_;
     ack.edge_keep_mask = topology_edge_keep_mask_;
+    ack.weak_edge_mask = topology_weak_edge_mask_;
+    std::copy(distributed_assignment_versions_.begin(),
+              distributed_assignment_versions_.end(),
+              ack.assignment_versions.begin());
+    for (int id = 0; id < distributed::kAgents; ++id)
+      ack.drone_to_slot[id] =
+          id < static_cast<int>(formation_assignment_.size())
+              ? formation_assignment_[id] : id;
     ack.group_id = dynamic_topology_active_
                        ? dynamicGroupForDrone(planner_manager_->pp_.drone_id)
                        : -1;
@@ -505,7 +513,10 @@ namespace ego_planner
              (first < static_cast<int>(dynamic_formation_groups_.size()) &&
               second < static_cast<int>(dynamic_formation_groups_.size()) &&
               dynamic_formation_groups_[first] == dynamic_formation_groups_[second]));
-      edges << first << "-" << second << ":" << (connected ? "on" : "cut");
+      const bool weak = connected && have_exact_edges &&
+          (topology_weak_edge_mask_ & (uint32_t{1} << edge)) != 0;
+      edges << first << "-" << second << ":"
+            << (weak ? "weak" : connected ? "on" : "cut");
     }
     ROS_WARN_STREAM("[TOPOLOGY_APPLIED] drone="
                     << planner_manager_->pp_.drone_id
@@ -573,6 +584,7 @@ namespace ego_planner
         msg->mode == topology_mode_ && components == topology_components_ &&
         msg->edge_count == topology_edge_count_ &&
         msg->edge_keep_mask == topology_edge_keep_mask_ &&
+        msg->weak_edge_mask == topology_weak_edge_mask_ &&
         std::fabs(formation_scale - split_formation_scale_) < 1e-6 &&
         std::fabs(progress_scale - split_progress_sync_scale_) < 1e-6;
     if (msg->epoch == topology_epoch_)
@@ -593,6 +605,7 @@ namespace ego_planner
     const bool edge_topology_changed =
         msg->edge_count != topology_edge_count_ ||
         msg->edge_keep_mask != topology_edge_keep_mask_;
+    const bool weak_changed = msg->weak_edge_mask != topology_weak_edge_mask_;
     const bool scale_changed =
         std::fabs(formation_scale - split_formation_scale_) >= 1e-6 ||
         std::fabs(progress_scale - split_progress_sync_scale_) >= 1e-6;
@@ -617,6 +630,7 @@ namespace ego_planner
     topology_components_ = components;
     topology_edge_count_ = msg->edge_count;
     topology_edge_keep_mask_ = msg->edge_keep_mask;
+    topology_weak_edge_mask_ = msg->weak_edge_mask;
     manual_formation_split_ = msg->mode == FormationTopologyCommand::SPLIT;
     dynamic_topology_active_ = manual_formation_split_;
     dynamic_formation_groups_ = groups;
@@ -646,7 +660,7 @@ namespace ego_planner
 
     publishFormationGroupState();
     publishTopologyAck();
-    if (topology_changed || edge_topology_changed || scale_changed)
+    if (topology_changed || edge_topology_changed || scale_changed || weak_changed)
       logEffectiveTopology(msg->reason);
 
     if ((topology_changed || edge_topology_changed || scale_changed) && have_target_ &&
@@ -659,6 +673,19 @@ namespace ego_planner
       const FormationTopologyCommand::ConstPtr &msg)
   {
     const ros::Time now = ros::Time::now();
+    std::array<uint32_t, distributed::kColumns> received_versions{};
+    std::copy(msg->assignment_versions.begin(),
+              msg->assignment_versions.end(), received_versions.begin());
+    const auto expected_assignment =
+        distributed::assignmentFromVersions(received_versions);
+    bool valid_assignment = true;
+    for (int id = 0; id < distributed::kAgents; ++id)
+      valid_assignment = valid_assignment &&
+          msg->drone_to_slot[id] ==
+              static_cast<uint32_t>(expected_assignment[id]);
+    for (int column = 0; column < distributed::kColumns; ++column)
+      valid_assignment = valid_assignment &&
+          received_versions[column] >= distributed_assignment_versions_[column];
     if (msg->header.stamp.isZero() ||
         msg->header.stamp <= distributed_topology_stamp_ ||
         (now - msg->header.stamp).toSec() > distributed_topology_timeout_ ||
@@ -666,9 +693,12 @@ namespace ego_planner
         msg->mode != FormationTopologyCommand::SPLIT ||
         msg->edge_count != distributed::kEdges ||
         msg->edge_keep_mask >= (uint32_t{1} << distributed::kEdges) ||
+        (msg->weak_edge_mask & ~msg->edge_keep_mask) != 0 ||
         !std::isfinite(msg->formation_scale) || msg->formation_scale < 0 ||
         msg->progress_sync_scale != 0 ||
-        msg->components != distributed::components(msg->edge_keep_mask) ||
+        !valid_assignment ||
+        msg->components != distributed::components(
+            msg->edge_keep_mask, expected_assignment) ||
         (msg->reason != "DISTRIBUTED_STARTUP_WAIT" &&
          msg->reason != "DISTRIBUTED_ENDPOINT_LEASES"))
       return;
@@ -687,11 +717,39 @@ namespace ego_planner
       distributed_startup_ready_ = true;
       ROS_INFO("[DISTRIBUTED_STARTUP] barrier passed; target flight enabled");
     }
+    const bool assignment_changed =
+        !std::equal(formation_assignment_.begin(), formation_assignment_.end(),
+                    expected_assignment.begin());
+    if (assignment_changed)
+    {
+      const std::vector<int> next_assignment(expected_assignment.begin(),
+                                             expected_assignment.end());
+      const std::vector<int> previous_assignment = formation_assignment_;
+      const Eigen::Vector3d previous_pos = formation_pos_;
+      if (!planner_manager_->setFormationAssignment(next_assignment)) return;
+      formation_assignment_ = next_assignment;
+      formation_pos_ = formation_slots_[expected_assignment[planner_manager_->pp_.drone_id]];
+      if (have_target_ && !refreshAssignedWaypointTarget())
+      {
+        planner_manager_->setFormationAssignment(previous_assignment);
+        formation_assignment_ = previous_assignment;
+        formation_pos_ = previous_pos;
+        expireDistributedTopology();
+        ROS_ERROR_THROTTLE(1.0, "[SLOT_SWAP] target refresh failed; local edges cleared, retrying");
+        return;
+      }
+      assignment_generation_ = distributed::assignmentSignature(received_versions);
+    }
+    distributed_assignment_versions_ = received_versions;
     FormationTopologyCommand::Ptr local(new FormationTopologyCommand(*msg));
     // Local application order: never compare epochs produced by different agents.
     local->epoch = topology_epoch_ + 1;
     formationTopologyCommandCallback(local);
     distributed_topology_stamp_ = msg->header.stamp;
+    if (assignment_changed && have_target_ &&
+        (exec_state_ == EXEC_TRAJ || exec_state_ == REPLAN_TRAJ ||
+         exec_state_ == GEN_NEW_TRAJ))
+      changeFSMExecState(REPLAN_TRAJ, "SLOT_SWAP");
   }
 
   void EGOReplanFSM::expireDistributedTopology()
@@ -701,7 +759,16 @@ namespace ego_planner
     local->mode = FormationTopologyCommand::SPLIT;
     local->edge_count = distributed::kEdges;
     local->edge_keep_mask = 0;
-    local->components = distributed::components(0);
+    local->weak_edge_mask = 0;
+    distributed::Assignment assignment = distributed::identityAssignment();
+    for (int id = 0; id < distributed::kAgents; ++id)
+      assignment[id] = formation_assignment_[id];
+    local->components = distributed::components(0, assignment);
+    std::copy(distributed_assignment_versions_.begin(),
+              distributed_assignment_versions_.end(),
+              local->assignment_versions.begin());
+    for (int id = 0; id < distributed::kAgents; ++id)
+      local->drone_to_slot[id] = assignment[id];
     local->formation_scale = 0.15;
     local->progress_sync_scale = 0;
     local->reason = "LOCAL_AGENT_MISSING_OR_STALE";

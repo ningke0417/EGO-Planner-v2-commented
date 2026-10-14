@@ -30,6 +30,7 @@ add_message_files(
   FormationTopologyAck.msg
   FormationEdgeEvidence.msg
   FormationAgentState.msg
+  FormationSlotSwap.msg
 )
 
 generate_messages(

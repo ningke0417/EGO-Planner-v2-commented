@@ -36,10 +36,19 @@ class Visualizer {
             if (msg->drone_id != static_cast<unsigned>(id) ||
                 msg->edge_count != topology::kEdges ||
                 msg->edge_keep_mask >= (1u << topology::kEdges) ||
+                (msg->weak_edge_mask & ~msg->edge_keep_mask) != 0 ||
                 msg->mode != ego_planner::FormationTopologyCommand::SPLIT ||
                 !validStamp(msg->header.stamp, a.state_stamp, state_timeout_))
               return;
+            topology::Assignment assignment{};
+            for (int drone = 0; drone < topology::kAgents; ++drone)
+              assignment[drone] = msg->drone_to_slot[drone];
+            if (!topology::validAssignment(assignment)) return;
             a.mask = msg->edge_keep_mask;
+            a.weak_mask = msg->weak_edge_mask;
+            a.assignment = assignment;
+            std::copy(msg->assignment_versions.begin(),
+                      msg->assignment_versions.end(), a.versions.begin());
             a.state_stamp = msg->header.stamp;
             a.state_received = ros::WallTime::now();
           });
@@ -63,6 +72,9 @@ class Visualizer {
   struct Agent {
     geometry_msgs::Point position;
     uint32_t mask{0};
+    uint32_t weak_mask{0};
+    topology::Assignment assignment{topology::identityAssignment()};
+    std::array<uint32_t, topology::kColumns> versions{};
     ros::Time state_stamp, odom_stamp;
     ros::WallTime state_received, odom_received;
   };
@@ -96,14 +108,25 @@ class Visualizer {
     bool show_labels = false;
     nh_.param("show_edge_labels", show_labels, false);
     visualization_msgs::MarkerArray output;
-    std::array<int, 4> counts{}; // connected, disagreement, cut, stale/missing
+    std::array<int, 5> counts{}; // normal, disagreement, cut, stale, weak
+    topology::Assignment assignment = topology::identityAssignment();
+    for (const auto& agent : agents_)
+      if (fresh(agent)) { assignment = agent.assignment; break; }
     for (int edge = 0; edge < topology::kEdges; ++edge) {
-      const auto pair = topology::edges()[edge];
+      const auto logical = topology::edges()[edge];
+      const std::array<int, 2> pair{{
+          topology::owner(assignment, logical[0]),
+          topology::owner(assignment, logical[1])}};
       const auto& a = agents_[pair[0]];
       const auto& b = agents_[pair[1]];
       const bool first = a.mask & (1u << edge), second = b.mask & (1u << edge);
+      const bool first_weak = a.weak_mask & (1u << edge);
+      const bool second_weak = b.weak_mask & (1u << edge);
       const int state = !fresh(a) || !fresh(b) ? 3 :
-                        first != second ? 1 : first ? 0 : 2;
+                        a.assignment != assignment || b.assignment != assignment ||
+                        a.versions != b.versions || first != second ||
+                        first_weak != second_weak ? 1 :
+                        first ? (first_weak ? 4 : 0) : 2;
       ++counts[state];
       Marker line = marker("distributed_edges", edge, Marker::LINE_LIST);
       Marker label = marker("distributed_edge_labels", edge, Marker::TEXT_VIEW_FACING);
@@ -111,16 +134,17 @@ class Visualizer {
       if (a.odom_stamp.isZero() || b.odom_stamp.isZero() || (state == 2 && !show_cut)) {
         line.action = label.action = Marker::DELETE;
       } else {
-        static const std::array<std::array<float, 3>, 4> colors{{
+        static const std::array<std::array<float, 3>, 5> colors{{
             {{0.15f, 0.95f, 0.95f}}, {{1.0f, 0.8f, 0.0f}},
-            {{1.0f, 0.10f, 0.05f}}, {{0.65f, 0.65f, 0.65f}}}};
-        static const std::array<const char*, 4> names{{"ON", "MISMATCH", "CUT", "STALE"}};
+            {{1.0f, 0.10f, 0.05f}}, {{0.65f, 0.65f, 0.65f}},
+            {{0.65f, 0.35f, 1.0f}}}};
+        static const std::array<const char*, 5> names{{"ON", "MISMATCH", "CUT", "STALE", "WEAK"}};
         line.color.r = colors[state][0];
         line.color.g = colors[state][1];
         line.color.b = colors[state][2];
-        line.color.a = state == 0 ? 1.0 : 0.8;
-        line.scale.x = state == 0 ? 0.085 : 0.045;
-        if (state == 0) {
+        line.color.a = state == 0 || state == 4 ? 1.0 : 0.8;
+        line.scale.x = state == 0 ? 0.085 : state == 4 ? 0.065 : 0.045;
+        if (state == 0 || state == 4) {
           line.points = {a.position, b.position};
         } else {
           // Match the centralized view: four dashes, slightly above the edge.
@@ -167,6 +191,7 @@ class Visualizer {
     }
     legend.pose.position.z += 0.90;
     legend.text = "APPLIED  ON " + std::to_string(counts[0]) +
+        "  WEAK " + std::to_string(counts[4]) +
         "  CUT " + std::to_string(counts[2]);
     if (counts[1]) legend.text += "  MISMATCH " + std::to_string(counts[1]);
     if (counts[3]) legend.text += "  STALE " + std::to_string(counts[3]);

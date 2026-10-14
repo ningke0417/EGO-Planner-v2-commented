@@ -29,6 +29,9 @@ def main():
     subscriber = rospy.Subscriber(name + '/markers', MarkerArray, receive)
     process = subprocess.Popen(['rosrun', 'ego_planner', 'distributed_formation_visualizer'])
     masks = [0] * 8
+    weak_masks = [0] * 8
+    assignment = list(range(8))
+    versions = [0] * 4
     saved = {}
 
     def pump(duration=0.8, omit_state=None, omit_odom=None, replay=False, invalid=False):
@@ -61,6 +64,9 @@ def main():
                 msg.mode = 1
                 msg.edge_count = 10
                 msg.edge_keep_mask = masks[i]
+                msg.weak_edge_mask = weak_masks[i]
+                msg.drone_to_slot = assignment
+                msg.assignment_versions = versions
                 states[i].publish(msg)
                 saved[i] = msg
             time.sleep(0.03)
@@ -94,6 +100,13 @@ def main():
         check((0.15, 0.95, 0.95), 'both endpoint KEEP should match centralized cyan')
         assert abs(edge().scale.x - 0.085) < 1e-6
         assert len(edge().points) == 2
+        weak_masks[0] = weak_masks[1] = 1
+        pump()
+        check((0.65, 0.35, 1.0), 'weak edge should be purple')
+        assert 'WEAK 1' in latest[('distributed_legend', 0)].text
+        weak_masks[0] = weak_masks[1] = 0
+        pump()
+        check((0.15, 0.95, 0.95), 'normal edge should return to cyan')
         masks[1] = 0
         pump()
         check((1, 0.8, 0), 'endpoint mismatch should be yellow')
@@ -120,8 +133,18 @@ def main():
         outputs = {topic for topic, nodes in pubs if name in nodes}
         assert outputs <= {'/rosout', name + '/markers'}, outputs
         assert len([topic for topic, nodes in subs if name in nodes]) == 16
-        print('PASS: missing positions, endpoint-only colors, hide/delete, stale/replay, '
-              'invalid ID, recovery, stale odometry, marker lifetime, read-only graph', flush=True)
+        # Logical edge 0-1 is now physically owned by drones 4 and 1.
+        assignment[0], assignment[4] = assignment[4], assignment[0]
+        versions[0] = 1
+        masks[:] = [0] * 8
+        masks[4] = masks[1] = 1
+        pump()
+        check((0.15, 0.95, 0.95), 'swapped owners must supply logical edge evidence')
+        assert abs(edge().points[0].x) < 1e-6
+        assert abs(edge().points[0].y - 1.0) < 1e-6, 'edge must start at drone 4'
+        print('PASS: missing positions, endpoint-only colors, weak stage, hide/delete, stale/replay, '
+              'invalid ID, recovery, stale odometry, marker lifetime, swapped endpoints, '
+              'read-only graph', flush=True)
     finally:
         process.terminate()
         try:
