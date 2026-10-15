@@ -72,7 +72,6 @@
         <node pkg="ego_planner" type="distributed_formation_agent"
               name="drone_$(arg drone_id)_formation_agent" output="log">
             <param name="drone_id" value="$(arg drone_id)"/>
-            <param name="inflation" value="$(arg safety_distance)"/>
             <param name="weak_reconnect_distance" value="3.0"/>
             <param name="weak_reconnect_hold" value="0.3"/>
             <param name="weak_formation_scale" value="0.22"/>
@@ -82,6 +81,7 @@
             <remap from="~odom" to="/drone_$(arg drone_id)_$(arg odom_topic)"/>
             <remap from="~occupied" to="/drone_$(arg drone_id)/observed_occupied"/>
             <remap from="~free" to="/drone_$(arg drone_id)/observed_free"/>
+            <remap from="~inflated" to="/drone_$(arg drone_id)_ego_planner_node/grid_map/formation_occupancy"/>
         </node>
     </group>
 </launch>

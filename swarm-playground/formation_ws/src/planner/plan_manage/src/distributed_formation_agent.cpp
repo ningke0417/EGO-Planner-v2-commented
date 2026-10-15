@@ -31,12 +31,11 @@ class Agent {
     nh_.param("map_timeout", map_timeout_, 1.0);
     nh_.param("reconnect_hold", reconnect_hold_, 0.8);
     nh_.param("weak_reconnect_hold", weak_reconnect_hold_, 0.3);
+    nh_.param("weak_to_normal_hold", weak_to_normal_hold_, 0.5);
     nh_.param("weak_approach_hold", weak_approach_hold_, 0.6);
     nh_.param("weak_min_separation", weak_min_separation_, 0.2);
     nh_.param("weak_min_reversal", weak_min_reversal_, 0.25);
     nh_.param("cut_hold", cut_hold_, 1.0);
-    nh_.param("resolution", resolution_, 0.2);
-    nh_.param("inflation", inflation_, 0.2);
     nh_.param("formation_scale", formation_scale_, 0.15);
     nh_.param("split_distance", split_distance_, 1.8);
     nh_.param("merge_distance", merge_distance_, 1.7);
@@ -53,10 +52,11 @@ class Agent {
     const double forward_norm = std::hypot(forward_x_, forward_y_);
     if (id_ < 0 || id_ >= de::kAgents || ttl_ <= 0 ||
         map_timeout_ <= 0 || reconnect_hold_ < 0 ||
-        weak_reconnect_hold_ < 0 || cut_hold_ < 0 ||
+        weak_reconnect_hold_ < 0 || weak_to_normal_hold_ < 0 ||
+        cut_hold_ < 0 ||
         weak_approach_hold_ < 0 || weak_min_separation_ < 0 ||
         weak_min_reversal_ <= 0 ||
-        resolution_ <= 0 || inflation_ < 0 || formation_scale_ < 0 ||
+        formation_scale_ < 0 ||
         merge_distance_ <= 0 || split_distance_ < merge_distance_ ||
         weak_reconnect_distance_ < merge_distance_ ||
         weak_formation_scale_ < formation_scale_ ||
@@ -64,6 +64,25 @@ class Agent {
         swap_gain_min_ < 0 || swap_eval_period_ <= 0 || swap_cooldown_ < 0 ||
         !std::isfinite(forward_norm) || forward_norm < 1e-6)
       throw std::runtime_error("invalid distributed agent parameters");
+    // The planner is the source of truth for occupancy geometry. The separate
+    // observed-free grid certifies visibility; its coarser cells are not
+    // upsampled into invented fine-resolution observations.
+    const std::string planner = "/drone_"+std::to_string(id_)+"_ego_planner_node/grid_map/";
+    double planner_resolution, map_x, map_y, map_z, ground;
+    if (!nh_.getParam(planner+"resolution", planner_resolution) ||
+        !nh_.getParam(planner+"map_size_x", map_x) ||
+        !nh_.getParam(planner+"map_size_y", map_y) ||
+        !nh_.getParam(planner+"map_size_z", map_z) ||
+        !nh_.getParam(planner+"ground_height", ground) ||
+        !nh_.getParam("/drone_"+std::to_string(id_)+"_observed_map/resolution", resolution_) ||
+        !std::isfinite(map_x) || !std::isfinite(map_y) || !std::isfinite(map_z) ||
+        map_x <= 0 || map_y <= 0 || map_z <= 0 ||
+        !std::isfinite(resolution_) || resolution_ <= 0)
+      throw std::runtime_error("distributed agent requires local planner/observed grid parameters");
+    planner_layout_ = starconvex_adapter::VoxelGridLayout(
+        planner_resolution, {-map_x/2.0,-map_y/2.0,ground}, true);
+    planner_size_ = {map_x,map_y,map_z};
+    nh_.param<std::string>(planner+"frame_id", map_frame_, "world");
     forward_x_ /= forward_norm;
     forward_y_ /= forward_norm;
     assignment_ = de::identityAssignment();
@@ -71,7 +90,7 @@ class Agent {
     geometry_.delta_roof = 0.5;
     geometry_.frontier_floor = 0.0;
     geometry_.frontier_roof = 3.0;
-    geometry_.raycast_resolution = resolution_;
+    geometry_.raycast_resolution = planner_layout_.resolution;
     state_pub_ = nh_.advertise<ego_planner::FormationAgentState>("/swarm/agent_state", 32);
     edge_pub_ = nh_.advertise<ego_planner::FormationEdgeEvidence>("/swarm/edge_evidence", 64);
     command_pub_ = nh_.advertise<ego_planner::FormationTopologyCommand>("topology", 1);
@@ -94,6 +113,11 @@ class Agent {
           });
     occupied_sub_ = nh_.subscribe("occupied", 1, &Agent::occupied, this);
     free_sub_ = nh_.subscribe("free", 1, &Agent::freeCloud, this);
+    inflated_sub_ = nh_.subscribe("inflated", 1, &Agent::inflatedCloud, this);
+    ROS_INFO_STREAM("[DISTRIBUTED_GEOMETRY] drone=" << id_
+                    << " occupancy=local_planner_snapshot resolution=" << planner_resolution
+                    << " observed_free_resolution=" << resolution_
+                    << " extra_corridor_radius=0");
     timer_ = nh_.createTimer(ros::Duration(0.1), &Agent::tick, this);
   }
  private:
@@ -144,39 +168,36 @@ class Agent {
                     msg->weak_recovery);
   }
   void occupied(const sensor_msgs::PointCloud2::ConstPtr& msg) {
-    if (msg->header.stamp <= occupied_stamp_) return;
-    pcl::fromROSMsg(*msg, occupied_);
+    if (msg->header.frame_id != map_frame_ || msg->header.stamp <= occupied_stamp_ ||
+        msg->header.stamp > ros::Time::now()+ros::Duration(0.05)) return;
     occupied_stamp_ = msg->header.stamp;
     rebuild();
   }
   void freeCloud(const sensor_msgs::PointCloud2::ConstPtr& msg) {
-    if (msg->header.stamp <= free_stamp_) return;
+    if (msg->header.frame_id != map_frame_ || msg->header.stamp <= free_stamp_ ||
+        msg->header.stamp > ros::Time::now()+ros::Duration(0.05)) return;
     pcl::fromROSMsg(*msg, free_);
     free_stamp_ = msg->header.stamp;
     rebuild();
   }
+  void inflatedCloud(const sensor_msgs::PointCloud2::ConstPtr& msg) {
+    if (msg->header.frame_id != map_frame_ || msg->header.stamp <= inflated_stamp_ ||
+        msg->header.stamp > ros::Time::now()+ros::Duration(0.05)) return;
+    pcl::fromROSMsg(*msg, inflated_);
+    inflated_stamp_ = msg->header.stamp;
+    rebuild();
+  }
   void rebuild() {
     // Both layers must refer to the same local sensor update.
-    if (occupied_stamp_.isZero() || occupied_stamp_ != free_stamp_) return;
-    field_.reset(new VoxelObstacleField(occupied_, free_, resolution_, inflation_));
-    field_stamp_ = occupied_stamp_;
+    if (occupied_stamp_.isZero() || occupied_stamp_ != free_stamp_ || inflated_stamp_.isZero()) return;
+    field_.reset(new VoxelObstacleField(inflated_, planner_layout_, free_,
+                 starconvex_adapter::VoxelGridLayout(resolution_), planner_size_));
+    field_stamp_ = std::min(occupied_stamp_,inflated_stamp_);
   }
   bool corridor(const Vec3& a, const Vec3& b) const {
-    const double length = norm(subtract(b, a));
-    const double planar = std::hypot(b.x - a.x, b.y - a.y);
-    const double px = planar > 1e-6 ? -(b.y - a.y) * 0.1 / planar : 0.1;
-    const double py = planar > 1e-6 ? (b.x - a.x) * 0.1 / planar : 0.0;
-    const std::array<Vec3, 5> offsets{{{0,0,0}, {px,py,0}, {-px,-py,0},
-                                             {0,0,0.1}, {0,0,-0.1}}};
-    const int samples = std::max(1, static_cast<int>(std::ceil(length / (resolution_ * 0.5))));
-    for (const auto& offset : offsets)
-      for (int i = 0; i <= samples; ++i) {
-        const double t = static_cast<double>(i) / samples;
-        if (!field_->knownFree({a.x + t*(b.x-a.x) + offset.x,
-                               a.y + t*(b.y-a.y) + offset.y,
-                               a.z + t*(b.z-a.z) + offset.z})) return false;
-      }
-    return true;
+    // The planner's occupied cells already include the vehicle safety margin.
+    // Traverse the centerline's cells without adding another 0.1 m band.
+    return field_->knownFreeSegment(a,b);
   }
   double overlap(const Vec3& a, const Vec3& b) const {
     OriginalStarSpace first(a, starconvex_adapter::generateBoundaryCloud(a, *field_, geometry_));
@@ -489,7 +510,7 @@ class Agent {
         }
       } else if (weak_reconnected_[edge] && distance <= merge_distance_) {
         if (normal_since_[edge].isZero()) normal_since_[edge] = now;
-        if ((now-normal_since_[edge]).toSec() >= reconnect_hold_) {
+        if ((now-normal_since_[edge]).toSec() >= weak_to_normal_hold_) {
           weak_reconnected_[edge] = false;
           visibility_reconnected_[edge] = true;
           approach_[edge].reset();
@@ -571,14 +592,18 @@ class Agent {
     command_pub_.publish(command);
   }
   ros::NodeHandle nh_;
-  ros::Subscriber odom_sub_, state_sub_, evidence_sub_, swap_sub_, occupied_sub_, free_sub_;
+  ros::Subscriber odom_sub_, state_sub_, evidence_sub_, swap_sub_, occupied_sub_, free_sub_, inflated_sub_;
   std::array<ros::Subscriber, de::kAgents> applied_subs_{};
   ros::Publisher state_pub_, edge_pub_, command_pub_, swap_pub_;
   ros::Timer timer_;
   int id_;
-  double ttl_, map_timeout_, reconnect_hold_, weak_reconnect_hold_, cut_hold_;
+  double ttl_, map_timeout_, reconnect_hold_, weak_reconnect_hold_;
+  double weak_to_normal_hold_, cut_hold_;
   double weak_approach_hold_, weak_min_separation_, weak_min_reversal_;
-  double resolution_, inflation_;
+  double resolution_;
+  starconvex_adapter::VoxelGridLayout planner_layout_;
+  Vec3 planner_size_;
+  std::string map_frame_;
   double formation_scale_, split_distance_, merge_distance_, split_score_;
   double weak_reconnect_distance_, weak_formation_scale_;
   double swap_gain_min_, swap_eval_period_, swap_cooldown_, forward_x_, forward_y_;
@@ -605,8 +630,8 @@ class Agent {
   std::array<bool, de::kEdges> candidate_weak_{};
   std::array<de::WeakRecoveryApproach, de::kEdges> approach_{};
   std::array<ros::Time, de::kEdges> ready_since_{}, cut_since_{}, normal_since_{};
-  pcl::PointCloud<pcl::PointXYZ> occupied_, free_;
-  ros::Time occupied_stamp_, free_stamp_, field_stamp_, last_evaluation_;
+  pcl::PointCloud<pcl::PointXYZ> free_, inflated_;
+  ros::Time occupied_stamp_, free_stamp_, inflated_stamp_, field_stamp_, last_evaluation_;
   std::unique_ptr<VoxelObstacleField> field_;
   starconvex_adapter::GeometryOptions geometry_;
   bool local_startup_ready_{false}, startup_ready_{false};

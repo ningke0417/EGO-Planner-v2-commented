@@ -62,6 +62,12 @@ def main():
     assert len(publishers['/swarm/trajectories']) == 8
     assert len(publishers['/swarm/edge_evidence']) == 8
     for agent in range(8):
+        occupancy_topic = '/drone_%d_ego_planner_node/grid_map/formation_occupancy' % agent
+        assert '/drone_%d_ego_planner_node' % agent in publishers.get(occupancy_topic, [])
+        assert '/drone_%d_formation_agent' % agent in subscribers_by_topic.get(occupancy_topic, [])
+        for peer in range(8):
+            if peer != agent:
+                assert '/drone_%d_formation_agent' % peer not in subscribers_by_topic.get(occupancy_topic, [])
         node = '/drone_%d_observed_map' % agent
         inputs = [topic for topic, nodes in subs if node in nodes]
         assert '/drone_%d_pcl_render_node/cloud' % agent in inputs

@@ -132,6 +132,10 @@ void GridMap::initMap(ros::NodeHandle &nh)
 
   map_pub_ = node_.advertise<sensor_msgs::PointCloud2>("grid_map/occupancy", 10);
   map_inf_pub_ = node_.advertise<sensor_msgs::PointCloud2>("grid_map/occupancy_inflate", 10);
+  node_.param("formation/distributed_enabled", formation_map_enabled_, false);
+  if (formation_map_enabled_)
+    formation_map_pub_ = node_.advertise<sensor_msgs::PointCloud2>(
+        "grid_map/formation_occupancy", 1, true);
 
   md_.occ_need_update_ = false;
   md_.local_updated_ = false;
@@ -646,6 +650,7 @@ void GridMap::clearAndInflateLocalMap()
 
 void GridMap::visCallback(const ros::TimerEvent & /*event*/)
 {
+  publishFormationMap();
   publishMapInflate(true);
   publishMap();
 }
@@ -874,6 +879,40 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
 
   boundIndex(md_.local_bound_min_);
   boundIndex(md_.local_bound_max_);
+
+  // Preserve the sensor timestamp: republishing a cached map must not make it
+  // fresh. Only the point-cloud map path supplies this distributed snapshot.
+  formation_sensor_stamp_ = img->header.stamp;
+}
+
+void GridMap::publishFormationMap()
+{
+  const ros::Time now = ros::Time::now();
+  if (!formation_map_enabled_ || formation_sensor_stamp_.isZero() ||
+      formation_map_pub_.getNumSubscribers() == 0 ||
+      (!last_formation_publish_.isZero() &&
+       (now-last_formation_publish_).toSec() < 0.20))
+    return;
+  last_formation_publish_ = now;
+
+  // This is a control snapshot of the exact inflated occupancy buffer, not the
+  // visualization cloud: include the whole map and all heights. Its consumers
+  // use the planner's origin/resolution and must not inflate these cells again.
+  pcl::PointCloud<pcl::PointXYZ> cloud;
+  cloud.header.frame_id = mp_.frame_id_;
+  for (int x=0; x<mp_.map_voxel_num_(0); ++x)
+    for (int y=0; y<mp_.map_voxel_num_(1); ++y)
+      for (int z=0; z<mp_.map_voxel_num_(2); ++z)
+      {
+        if (!md_.occupancy_buffer_inflate_[toAddress(x,y,z)]) continue;
+        Eigen::Vector3d position;
+        indexToPos(Eigen::Vector3i(x,y,z), position);
+        cloud.push_back(pcl::PointXYZ(position.x(),position.y(),position.z()));
+      }
+  sensor_msgs::PointCloud2 message;
+  pcl::toROSMsg(cloud,message);
+  message.header.stamp = formation_sensor_stamp_;
+  formation_map_pub_.publish(message);
 }
 
 void GridMap::publishMap()

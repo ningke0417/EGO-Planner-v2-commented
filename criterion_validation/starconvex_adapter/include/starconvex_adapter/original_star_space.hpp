@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <stdexcept>
@@ -219,6 +220,91 @@ struct VoxelIndexHash {
   }
 };
 
+// Occupancy snapshots use the planner's floor-indexed grid; observed-free
+// evidence may retain its original, coarser, center-indexed grid. Keeping the
+// layouts explicit avoids re-quantizing or re-inflating certified obstacles.
+struct VoxelGridLayout {
+  double resolution;
+  Vec3 origin;
+  bool floor_indexed;
+
+  explicit VoxelGridLayout(double step = 0.1, Vec3 offset = {}, bool floor = false)
+      : resolution(step), origin(offset), floor_indexed(floor) {
+    if (!std::isfinite(step) || step <= 0.0 ||
+        !std::isfinite(offset.x) || !std::isfinite(offset.y) || !std::isfinite(offset.z))
+      throw std::runtime_error("invalid voxel grid layout");
+  }
+
+  VoxelIndex indexOf(const Vec3& point) const {
+    if (!floor_indexed)
+      return {std::llround((point.x-origin.x)/resolution),
+              std::llround((point.y-origin.y)/resolution),
+              std::llround((point.z-origin.z)/resolution)};
+    // Match GridMap::posToIndex's operation order at floating-point boundaries.
+    const double inverse = 1.0/resolution;
+    return {static_cast<std::int64_t>(std::floor((point.x-origin.x)*inverse)),
+            static_cast<std::int64_t>(std::floor((point.y-origin.y)*inverse)),
+            static_cast<std::int64_t>(std::floor((point.z-origin.z)*inverse))};
+  }
+
+  template <typename Predicate>
+  bool segmentSatisfies(const Vec3& a, const Vec3& b, Predicate accept) const {
+    for (double value : {a.x, a.y, a.z, b.x, b.y, b.z})
+      if (!std::isfinite(value)) return false;
+    auto current = indexOf(a);
+    const auto end = indexOf(b);
+    const std::array<double,3> start{{a.x,a.y,a.z}}, delta{{b.x-a.x,b.y-a.y,b.z-a.z}},
+                               offset{{origin.x,origin.y,origin.z}};
+    std::array<int,3> step{};
+    std::array<double,3> next{}, stride{};
+    const std::array<std::int64_t,3> initial{{current.x,current.y,current.z}};
+    for (int axis=0; axis<3; ++axis) {
+      step[axis] = delta[axis] > 0 ? 1 : delta[axis] < 0 ? -1 : 0;
+      if (!step[axis]) {
+        next[axis] = stride[axis] = std::numeric_limits<double>::infinity();
+        continue;
+      }
+      const double lower = offset[axis] +
+          (initial[axis] - (floor_indexed ? 0.0 : 0.5))*resolution;
+      const double boundary = lower + (step[axis] > 0 ? resolution : 0.0);
+      next[axis] = std::max(0.0, (boundary-start[axis])/delta[axis]);
+      stride[axis] = resolution/std::fabs(delta[axis]);
+    }
+    const auto limit = std::llabs(end.x-current.x) + std::llabs(end.y-current.y) +
+                       std::llabs(end.z-current.z) + 3;
+    for (std::int64_t iteration=0; iteration<limit; ++iteration) {
+      if (!accept(current)) return false;
+      if (current == end) return true;
+      const double crossing = std::min(next[0], std::min(next[1],next[2]));
+      if (crossing > 1.0+1e-12) return accept(end);
+      std::array<int,3> axes{};
+      int count=0;
+      for (int axis=0; axis<3; ++axis)
+        if (std::fabs(next[axis]-crossing) <= 1e-12) axes[count++]=axis;
+      // At an edge/corner, check every touched neighboring cell. A thin
+      // occupied or unknown sliver must not disappear between point samples.
+      for (int mask=1; mask<(1<<count); ++mask) {
+        VoxelIndex touched=current;
+        for (int bit=0; bit<count; ++bit) if (mask & (1<<bit)) {
+          const int axis=axes[bit];
+          if (axis==0) touched.x+=step[axis];
+          else if (axis==1) touched.y+=step[axis];
+          else touched.z+=step[axis];
+        }
+        if (!accept(touched)) return false;
+      }
+      for (int bit=0; bit<count; ++bit) {
+        const int axis=axes[bit];
+        if (axis==0) current.x+=step[axis];
+        else if (axis==1) current.y+=step[axis];
+        else current.z+=step[axis];
+        next[axis]+=stride[axis];
+      }
+    }
+    return false;
+  }
+};
+
 // Immutable voxel field.  The legacy constructor models occupied/not-occupied;
 // the overload additionally preserves observed-free voxels so callers can
 // distinguish unknown space from certified free space.
@@ -226,14 +312,15 @@ class VoxelObstacleField {
  public:
   VoxelObstacleField(const pcl::PointCloud<pcl::PointXYZ>& cloud,
                      double resolution, double inflation)
-      : resolution_(resolution) {
+      : resolution_(resolution), occupied_layout_(resolution), free_layout_(resolution) {
     initializeOccupied(cloud, inflation, true);
   }
 
   VoxelObstacleField(const pcl::PointCloud<pcl::PointXYZ>& occupied_cloud,
                      const pcl::PointCloud<pcl::PointXYZ>& known_free_cloud,
                      double resolution, double inflation)
-      : resolution_(resolution), has_known_free_layer_(true) {
+      : resolution_(resolution), occupied_layout_(resolution), free_layout_(resolution),
+        has_known_free_layer_(true) {
     initializeOccupied(occupied_cloud, inflation, false);
     for (const auto& point : known_free_cloud.points) {
       if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
@@ -246,16 +333,54 @@ class VoxelObstacleField {
       throw std::runtime_error("tri-state voxel field is empty");
   }
 
+  // The occupied input is already inflated by the local planner. Do not apply
+  // another safety margin or the legacy spherical/half-cell inflation here.
+  VoxelObstacleField(const pcl::PointCloud<pcl::PointXYZ>& planner_occupied,
+                     const VoxelGridLayout& planner_layout,
+                     const pcl::PointCloud<pcl::PointXYZ>& observed_free,
+                     const VoxelGridLayout& observed_layout, Vec3 planner_size = {})
+      : resolution_(planner_layout.resolution), occupied_layout_(planner_layout),
+        free_layout_(observed_layout), planner_size_(planner_size), has_known_free_layer_(true) {
+    initializeOccupied(planner_occupied, 0.0, false);
+    for (const auto& point : observed_free.points) {
+      if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
+        continue;
+      known_free_.insert(free_layout_.indexOf({point.x,point.y,point.z}));
+    }
+    if (known_free_.empty() && occupied_.empty())
+      throw std::runtime_error("tri-state planner voxel field is empty");
+  }
+
   bool occupied(const Vec3& point) const {
     return occupied_.count(indexOf(point)) != 0;
   }
 
   bool knownFree(const Vec3& point) const {
+    if (planner_size_.x > 0.0 &&
+        (point.x < occupied_layout_.origin.x+1e-4 ||
+         point.y < occupied_layout_.origin.y+1e-4 ||
+         point.z < occupied_layout_.origin.z+1e-4 ||
+         point.x > occupied_layout_.origin.x+planner_size_.x-1e-4 ||
+         point.y > occupied_layout_.origin.y+planner_size_.y-1e-4 ||
+         point.z > occupied_layout_.origin.z+planner_size_.z-1e-4)) return false;
     if (!has_known_free_layer_) return !occupied(point);
-    return known_free_.count(indexOf(point)) != 0;
+    return !occupied(point) && known_free_.count(free_layout_.indexOf(point)) != 0;
   }
 
   bool hasKnownFreeLayer() const { return has_known_free_layer_; }
+
+  bool knownFreeSegment(const Vec3& a, const Vec3& b) const {
+    for (double value : {a.x,a.y,a.z,b.x,b.y,b.z})
+      if (!std::isfinite(value)) return false;
+    if (!knownFree(a) || !knownFree(b)) return false;
+    if (!occupied_layout_.segmentSatisfies(a,b, [this](const VoxelIndex& cell) {
+          return occupied_.count(cell)==0;
+        })) return false;
+    return !has_known_free_layer_ ||
+        free_layout_.segmentSatisfies(a,b, [this](const VoxelIndex& cell) {
+          return known_free_.count(cell)!=0;
+        });
+  }
 
   Vec3 firstUnsafe(const Vec3& origin, const Vec3& endpoint,
                    double step) const {
@@ -333,12 +458,12 @@ class VoxelObstacleField {
   }
 
   VoxelIndex indexOf(const Vec3& point) const {
-    return {static_cast<std::int64_t>(std::llround(point.x / resolution_)),
-            static_cast<std::int64_t>(std::llround(point.y / resolution_)),
-            static_cast<std::int64_t>(std::llround(point.z / resolution_))};
+    return occupied_layout_.indexOf(point);
   }
 
   double resolution_ = 0.1;
+  VoxelGridLayout occupied_layout_, free_layout_;
+  Vec3 planner_size_;
   std::unordered_set<VoxelIndex, VoxelIndexHash> occupied_;
   std::unordered_set<VoxelIndex, VoxelIndexHash> known_free_;
   bool has_known_free_layer_ = false;

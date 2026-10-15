@@ -247,7 +247,10 @@ private:
   SynchronizerImageOdom sync_image_odom_;
 
   ros::Subscriber indep_cloud_sub_, indep_odom_sub_, extrinsic_sub_;
-  ros::Publisher map_pub_, map_inf_pub_;
+  ros::Publisher map_pub_, map_inf_pub_, formation_map_pub_;
+  ros::Time formation_sensor_stamp_, last_formation_publish_;
+  bool formation_map_enabled_{false};
+  void publishFormationMap();
   ros::Timer occ_timer_, vis_timer_, fading_timer_;
 
   //
