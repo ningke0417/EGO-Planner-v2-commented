@@ -223,7 +223,7 @@ namespace ego_planner
         ros::Duration(0.001).sleep();
       }
 
-      ROS_WARN("Waiting for odometry and trigger");
+      ROS_INFO("Waiting for odometry and trigger");
 
       while (ros::ok() &&
              (!have_odom_ || !have_trigger_ || !initial_assignment_received_))

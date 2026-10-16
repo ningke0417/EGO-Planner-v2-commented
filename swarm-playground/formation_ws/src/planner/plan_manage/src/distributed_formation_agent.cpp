@@ -31,7 +31,7 @@ class Agent {
     nh_.param("map_timeout", map_timeout_, 1.0);
     nh_.param("reconnect_hold", reconnect_hold_, 0.8);
     nh_.param("weak_reconnect_hold", weak_reconnect_hold_, 0.3);
-    nh_.param("weak_to_normal_hold", weak_to_normal_hold_, 0.5);
+    nh_.param("weak_to_normal_hold", weak_to_normal_hold_, 0.2);
     nh_.param("weak_approach_hold", weak_approach_hold_, 0.6);
     nh_.param("weak_min_separation", weak_min_separation_, 0.2);
     nh_.param("weak_min_reversal", weak_min_reversal_, 0.25);
