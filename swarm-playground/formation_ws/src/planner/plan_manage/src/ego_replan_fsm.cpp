@@ -518,7 +518,7 @@ namespace ego_planner
       edges << first << "-" << second << ":"
             << (weak ? "weak" : connected ? "on" : "cut");
     }
-    ROS_WARN_STREAM("[TOPOLOGY_APPLIED] drone="
+    ROS_INFO_STREAM("[TOPOLOGY_APPLIED] drone="
                     << planner_manager_->pp_.drone_id
                     << " epoch=" << topology_epoch_
                     << " mode="
