@@ -25,6 +25,7 @@
 #include <traj_utils/DataDisp.h>
 #include <plan_manage/planner_manager.h>
 #include <plan_manage/distributed_edges.h>
+#include <plan_manage/distributed_assignment.h>
 #include <traj_utils/planning_visualization.h>
 #include <traj_utils/PolyTraj.h>
 #include <traj_utils/MINCOTraj.h>
@@ -105,6 +106,8 @@ namespace ego_planner
     std::vector<int> formation_assignment_;
     uint32_t assignment_generation_{0};
     std::array<uint32_t, distributed::kColumns> distributed_assignment_versions_{};
+    uint64_t distributed_assignment_epoch_{0};
+    uint64_t distributed_assignment_digest_{0};
     bool subgroup_route_intent_active_{false};
     bool dynamic_topology_active_{false};
     std::vector<int> dynamic_formation_groups_;

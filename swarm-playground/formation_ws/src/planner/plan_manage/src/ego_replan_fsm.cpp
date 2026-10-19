@@ -461,6 +461,8 @@ namespace ego_planner
     ack.edge_count = topology_edge_count_;
     ack.edge_keep_mask = topology_edge_keep_mask_;
     ack.weak_edge_mask = topology_weak_edge_mask_;
+    ack.assignment_epoch = distributed_assignment_epoch_;
+    ack.assignment_digest = distributed_assignment_digest_;
     std::copy(distributed_assignment_versions_.begin(),
               distributed_assignment_versions_.end(),
               ack.assignment_versions.begin());
@@ -468,6 +470,10 @@ namespace ego_planner
       ack.drone_to_slot[id] =
           id < static_cast<int>(formation_assignment_.size())
               ? formation_assignment_[id] : id;
+    ack.goal_valid = have_target_ && end_pt_.allFinite();
+    if (ack.goal_valid)
+      for (int axis = 0; axis < 3; ++axis)
+        ack.assigned_goal[axis] = end_pt_[axis];
     ack.group_id = dynamic_topology_active_
                        ? dynamicGroupForDrone(planner_manager_->pp_.drone_id)
                        : -1;
@@ -676,16 +682,34 @@ namespace ego_planner
     std::array<uint32_t, distributed::kColumns> received_versions{};
     std::copy(msg->assignment_versions.begin(),
               msg->assignment_versions.end(), received_versions.begin());
-    const auto expected_assignment =
-        distributed::assignmentFromVersions(received_versions);
-    bool valid_assignment = true;
+    distributed::Assignment expected_assignment{};
     for (int id = 0; id < distributed::kAgents; ++id)
+      expected_assignment[id] = static_cast<int>(msg->drone_to_slot[id]);
+    bool valid_assignment = distributed::validAssignment(expected_assignment);
+    if (msg->assignment_epoch == 0)
+    {
+      // Older pairwise-swap senders remain compatible until the first complete
+      // assignment commit. They can never roll a full permutation back.
+      valid_assignment = valid_assignment && distributed_assignment_epoch_ == 0 &&
+          msg->assignment_digest == 0 &&
+          expected_assignment == distributed::assignmentFromVersions(received_versions);
+      for (int column = 0; column < distributed::kColumns; ++column)
+        valid_assignment = valid_assignment &&
+            received_versions[column] >= distributed_assignment_versions_[column];
+    }
+    else
+    {
       valid_assignment = valid_assignment &&
-          msg->drone_to_slot[id] ==
-              static_cast<uint32_t>(expected_assignment[id]);
-    for (int column = 0; column < distributed::kColumns; ++column)
-      valid_assignment = valid_assignment &&
-          received_versions[column] >= distributed_assignment_versions_[column];
+          msg->assignment_epoch >= distributed_assignment_epoch_ &&
+          msg->assignment_digest ==
+              distributed::fullAssignmentSignature(expected_assignment);
+      if (msg->assignment_epoch == distributed_assignment_epoch_)
+        valid_assignment = valid_assignment &&
+            msg->assignment_digest == distributed_assignment_digest_ &&
+            formation_assignment_.size() == expected_assignment.size() &&
+            std::equal(formation_assignment_.begin(), formation_assignment_.end(),
+                       expected_assignment.begin());
+    }
     if (msg->header.stamp.isZero() ||
         msg->header.stamp <= distributed_topology_stamp_ ||
         (now - msg->header.stamp).toSec() > distributed_topology_timeout_ ||
@@ -717,19 +741,27 @@ namespace ego_planner
       distributed_startup_ready_ = true;
       ROS_INFO("[DISTRIBUTED_STARTUP] barrier passed; target flight enabled");
     }
-    const bool assignment_changed =
+    const bool assignment_changed = formation_assignment_.size() !=
+        expected_assignment.size() ||
         !std::equal(formation_assignment_.begin(), formation_assignment_.end(),
                     expected_assignment.begin());
+    const int my_id = planner_manager_->pp_.drone_id;
+    const bool my_slot_changed = assignment_changed &&
+        formation_assignment_[my_id] != expected_assignment[my_id];
     if (assignment_changed)
     {
       const std::vector<int> next_assignment(expected_assignment.begin(),
                                              expected_assignment.end());
       const std::vector<int> previous_assignment = formation_assignment_;
       const Eigen::Vector3d previous_pos = formation_pos_;
-      if (!planner_manager_->setFormationAssignment(next_assignment)) return;
+      if (!planner_manager_->setFormationAssignment(next_assignment))
+      {
+        expireDistributedTopology();
+        return;
+      }
       formation_assignment_ = next_assignment;
-      formation_pos_ = formation_slots_[expected_assignment[planner_manager_->pp_.drone_id]];
-      if (have_target_ && !refreshAssignedWaypointTarget())
+      formation_pos_ = formation_slots_[expected_assignment[my_id]];
+      if (my_slot_changed && have_target_ && !refreshAssignedWaypointTarget())
       {
         planner_manager_->setFormationAssignment(previous_assignment);
         formation_assignment_ = previous_assignment;
@@ -738,9 +770,14 @@ namespace ego_planner
         ROS_ERROR_THROTTLE(1.0, "[SLOT_SWAP] target refresh failed; local edges cleared, retrying");
         return;
       }
-      assignment_generation_ = distributed::assignmentSignature(received_versions);
+      assignment_generation_ = msg->assignment_epoch == 0
+          ? distributed::assignmentSignature(received_versions)
+          : static_cast<uint32_t>(msg->assignment_digest ^
+                                  (msg->assignment_digest >> 32));
     }
     distributed_assignment_versions_ = received_versions;
+    distributed_assignment_epoch_ = msg->assignment_epoch;
+    distributed_assignment_digest_ = msg->assignment_digest;
     FormationTopologyCommand::Ptr local(new FormationTopologyCommand(*msg));
     // Local application order: never compare epochs produced by different agents.
     local->epoch = topology_epoch_ + 1;
@@ -760,6 +797,8 @@ namespace ego_planner
     local->edge_count = distributed::kEdges;
     local->edge_keep_mask = 0;
     local->weak_edge_mask = 0;
+    local->assignment_epoch = distributed_assignment_epoch_;
+    local->assignment_digest = distributed_assignment_digest_;
     distributed::Assignment assignment = distributed::identityAssignment();
     for (int id = 0; id < distributed::kAgents; ++id)
       assignment[id] = formation_assignment_[id];

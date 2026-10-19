@@ -31,6 +31,7 @@ add_message_files(
   FormationEdgeEvidence.msg
   FormationAgentState.msg
   FormationSlotSwap.msg
+  FormationAssignment.msg
 )
 
 generate_messages(
@@ -190,6 +191,20 @@ add_dependencies(formation_auto_split_bridge_8uav_node
 
 if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(test_distributed_edges test/test_distributed_edges.cpp)
+  catkin_add_gtest(test_distributed_assignment test/test_distributed_assignment.cpp)
+  catkin_add_gtest(test_distributed_assignment_protocol
+    test/test_distributed_assignment_protocol.cpp)
+  if(TARGET test_distributed_assignment_protocol)
+    target_link_libraries(test_distributed_assignment_protocol ${catkin_LIBRARIES})
+    add_dependencies(test_distributed_assignment_protocol
+      ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+  endif()
+  # Manual, isolated ROS protocol integration test (requires fresh port 11339).
+  add_executable(test_distributed_assignment_protocol_runtime
+    test/test_distributed_assignment_protocol_runtime.cpp)
+  target_link_libraries(test_distributed_assignment_protocol_runtime ${catkin_LIBRARIES})
+  add_dependencies(test_distributed_assignment_protocol_runtime
+    ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
   catkin_add_gtest(test_tristate_voxel_field
     test/test_tristate_voxel_field.cpp)
   if(TARGET test_tristate_voxel_field)

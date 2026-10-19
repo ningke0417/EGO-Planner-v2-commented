@@ -14,6 +14,7 @@
 #include <ego_planner/FormationTopologyAck.h>
 #include <ego_planner/FormationSlotSwap.h>
 #include <plan_manage/distributed_edges.h>
+#include <plan_manage/distributed_reassignment.h>
 #include <starconvex_adapter/original_star_space.hpp>
 
 namespace {
@@ -44,6 +45,10 @@ class Agent {
     nh_.param("split_score", split_score_, 0.34);
     nh_.param("swap_enabled", swap_enabled_, false);
     nh_.param("/distributed_swap_enabled", swap_enabled_, swap_enabled_);
+    nh_.param<std::string>("swap_scope", swap_scope_, "all");
+    if (swap_scope_ != "all" && swap_scope_ != "column")
+      throw std::runtime_error("swap_scope must be all or column");
+    assignment_epoch_ = swap_scope_ == "all" ? 1 : 0;
     nh_.param("swap_gain_min", swap_gain_min_, 0.15);
     nh_.param("swap_eval_period", swap_eval_period_, 0.5);
     nh_.param("swap_cooldown", swap_cooldown_, 8.0);
@@ -110,6 +115,17 @@ class Agent {
             std::copy(msg->assignment_versions.begin(),
                       msg->assignment_versions.end(),
                       applied_versions_[id].begin());
+            applied_epochs_[id] = msg->assignment_epoch;
+            applied_digests_[id] = msg->assignment_digest;
+            for (int drone = 0; drone < de::kAgents; ++drone)
+              applied_assignments_[id][drone] = msg->drone_to_slot[drone];
+            if (id == id_) {
+              own_goal_valid_ = msg->goal_valid;
+              for (int j = 0; j < 3; ++j) {
+                own_goal_[j] = msg->assigned_goal[j];
+                own_goal_valid_ = own_goal_valid_ && std::isfinite(own_goal_[j]);
+              }
+            }
           });
     occupied_sub_ = nh_.subscribe("occupied", 1, &Agent::occupied, this);
     free_sub_ = nh_.subscribe("free", 1, &Agent::freeCloud, this);
@@ -118,6 +134,23 @@ class Agent {
                     << " occupancy=local_planner_snapshot resolution=" << planner_resolution
                     << " observed_free_resolution=" << resolution_
                     << " extra_corridor_radius=0");
+    if (swap_enabled_ && swap_scope_ == "all") {
+      reassignment_.reset(new de::AllAgentAssignment(
+          nh_, id_, session_, assignment_epoch_, assignment_,
+          [this]() { return assignmentView(); },
+          [this](const std::array<double, 3>& goal) {
+            const auto now = ros::Time::now();
+            return field_ && now >= field_stamp_ &&
+                (now - field_stamp_).toSec() <= map_timeout_ &&
+                state_leases_[id_].fresh(now.toSec(), ttl_) &&
+                corridor(positions_[id_], Vec3{goal[0], goal[1], goal[2]});
+          },
+          [this](uint64_t epoch, const de::Assignment& assignment) {
+            applyFullAssignment(epoch, assignment);
+          }));
+    }
+    ROS_INFO_STREAM("[ASSIGNMENT_CONFIG] drone=" << id_ << " enabled=" << swap_enabled_
+                    << " scope=" << swap_scope_ << " epoch=" << assignment_epoch_);
     timer_ = nh_.createTimer(ros::Duration(0.1), &Agent::tick, this);
   }
  private:
@@ -131,9 +164,19 @@ class Agent {
     value.sequence = ++state_sequence_;
     value.drone_id = id_;
     value.position = {{p.x, p.y, p.z}};
+    const auto& v = msg->twist.twist.linear;
+    if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z)) return;
+    value.velocity = {{v.x, v.y, v.z}};
     std::copy(versions_.begin(), versions_.end(),
               value.assignment_versions.begin());
     value.slot_id = assignment_[id_];
+    value.assignment_epoch = assignment_epoch_;
+    value.assignment_digest = assignment_epoch_ ? de::fullAssignmentSignature(assignment_) : 0;
+    std::copy(assignment_.begin(), assignment_.end(), value.drone_to_slot.begin());
+    std::copy(own_goal_.begin(), own_goal_.end(), value.assigned_goal.begin());
+    value.goal_valid = own_goal_valid_ &&
+        applied_epochs_[id_] == assignment_epoch_ &&
+        applied_assignments_[id_] == assignment_;
     value.startup_ready = local_startup_ready_;
     state(ego_planner::FormationAgentState::ConstPtr(new ego_planner::FormationAgentState(value)));
     state_pub_.publish(value);
@@ -141,6 +184,14 @@ class Agent {
   void state(const ego_planner::FormationAgentState::ConstPtr& msg) {
     if (msg->drone_id >= de::kAgents) return;
     for (double value : msg->position) if (!std::isfinite(value)) return;
+    for (double value : msg->velocity) if (!std::isfinite(value)) return;
+    for (double value : msg->assigned_goal) if (!std::isfinite(value)) return;
+    de::Assignment peer_assignment{};
+    std::copy(msg->drone_to_slot.begin(), msg->drone_to_slot.end(), peer_assignment.begin());
+    if (msg->assignment_epoch &&
+        (!de::validAssignment(peer_assignment) ||
+         msg->assignment_digest != de::fullAssignmentSignature(peer_assignment) ||
+         msg->slot_id != static_cast<unsigned>(peer_assignment[msg->drone_id]))) return;
     const double now = ros::Time::now().toSec();
     auto& lease = state_leases_[msg->drone_id];
     if (lease.accept(msg->session, msg->sequence, msg->header.stamp.toSec(),
@@ -148,13 +199,23 @@ class Agent {
       positions_[msg->drone_id] = {msg->position[0], msg->position[1], msg->position[2]};
       std::copy(msg->assignment_versions.begin(), msg->assignment_versions.end(),
                 peer_versions_[msg->drone_id].begin());
+      peer_assignments_[msg->drone_id] = peer_assignment;
+      peer_epochs_[msg->drone_id] = msg->assignment_epoch;
+      peer_digests_[msg->drone_id] = msg->assignment_digest;
+      for (int j = 0; j < 3; ++j) {
+        velocities_[msg->drone_id][j] = msg->velocity[j];
+        goals_[msg->drone_id][j] = msg->assigned_goal[j];
+      }
+      goal_valid_[msg->drone_id] = msg->goal_valid;
     }
     startup_leases_[msg->drone_id].accept(
         msg->session, msg->sequence, msg->header.stamp.toSec(), now, ttl_,
         msg->startup_ready);
   }
   void evidence(const ego_planner::FormationEdgeEvidence::ConstPtr& msg) {
-    if (!de::edgeVersionsMatch(msg->edge_index, versions_,
+    if (msg->assignment_epoch != assignment_epoch_ ||
+        msg->assignment_digest != (assignment_epoch_ ? de::fullAssignmentSignature(assignment_) : 0) ||
+        !de::edgeVersionsMatch(msg->edge_index, versions_,
                                msg->assignment_versions) ||
         msg->decision > ego_planner::FormationEdgeEvidence::KEEP ||
         (msg->weak_recovery && msg->decision !=
@@ -214,6 +275,40 @@ class Agent {
           va += ia; vb += ib; intersection += ia && ib;
         }
     return std::min(va,vb) ? static_cast<double>(intersection)/std::min(va,vb) : 0;
+  }
+  de::AllAgentAssignment::View assignmentView() const {
+    de::AllAgentAssignment::View view{};
+    const auto now = ros::Time::now();
+    for (int id = 0; id < de::kAgents; ++id) {
+      auto& m = view[id];
+      m.lease = state_leases_[id];
+      m.assignment = peer_assignments_[id];
+      m.epoch = peer_epochs_[id]; m.digest = peer_digests_[id];
+      m.position = {{positions_[id].x, positions_[id].y, positions_[id].z}};
+      m.velocity = velocities_[id]; m.goal = goals_[id];
+      m.goal_valid = goal_valid_[id];
+      m.applied = !applied_stamps_[id].isZero() && now >= applied_stamps_[id] &&
+          (now - applied_stamps_[id]).toSec() <= ttl_ &&
+          applied_epochs_[id] == assignment_epoch_ &&
+          applied_digests_[id] == de::fullAssignmentSignature(assignment_) &&
+          applied_assignments_[id] == assignment_;
+    }
+    return view;
+  }
+  void applyFullAssignment(uint64_t epoch, const de::Assignment& assignment) {
+    assignment_epoch_ = epoch;
+    assignment_ = assignment;
+    // Arbitrary permutations can change every physical endpoint. Never reuse
+    // old-column evidence or an approach timer under a new assignment epoch.
+    table_.clear();
+    kept_.fill(false); weak_reconnected_.fill(false);
+    visibility_reconnected_.fill(false); candidate_weak_.fill(false);
+    for (auto& approach : approach_) approach.reset();
+    ready_since_.fill(ros::Time()); cut_since_.fill(ros::Time());
+    normal_since_.fill(ros::Time());
+    own_goal_valid_ = false;
+    last_evaluation_ = ros::Time();
+    last_swap_ = ros::Time::now();
   }
   struct PendingSwap {
     uint64_t transaction = 0, proposer_session = 0;
@@ -298,7 +393,7 @@ class Agent {
              id_, column, versions_[column], tx.front, tx.rear, tx.gain);
   }
   void swapMessage(const ego_planner::FormationSlotSwap::ConstPtr& msg) {
-    if (!swap_enabled_) return;
+    if (!swap_enabled_ || swap_scope_ != "column") return;
     const ros::Time now = ros::Time::now();
     if (msg->sender_id >= de::kAgents || msg->column >= de::kColumns ||
         msg->front_drone >= de::kAgents || msg->rear_drone >= de::kAgents ||
@@ -363,7 +458,7 @@ class Agent {
     }
   }
   void evaluateSwaps(const ros::Time& now) {
-    if (!swap_enabled_ || !startup_ready_) return;
+    if (!swap_enabled_ || !startup_ready_ || swap_scope_ != "column") return;
     for (int column = 0; column < de::kColumns; ++column) {
       auto& pending = pending_[column];
       if (pending.transaction != 0 &&
@@ -527,6 +622,8 @@ class Agent {
       std::copy(versions_.begin(), versions_.end(),
                 value.assignment_versions.begin());
       value.assignment_generation = de::assignmentSignature(versions_);
+      value.assignment_epoch = assignment_epoch_;
+      value.assignment_digest = assignment_epoch_ ? de::fullAssignmentSignature(assignment_) : 0;
       value.edge_index = edge;
       value.observer_id = id_;
       value.peer_id = peer;
@@ -567,6 +664,7 @@ class Agent {
       else if (full_since_swap_) swap_armed_ = true;
       evaluateSwaps(now);
     }
+    if (reassignment_) reassignment_->tick(startup_ready_ && swap_armed_);
     // applySwap() invalidates incident evidence. Publish the new assignment
     // only with a mask recomputed from that same post-swap edge table.
     const uint32_t mask = table_.mask(now.toSec(), ttl_);
@@ -580,6 +678,8 @@ class Agent {
     command.weak_edge_mask = table_.weakMask(now.toSec(), ttl_);
     std::copy(versions_.begin(), versions_.end(),
               command.assignment_versions.begin());
+    command.assignment_epoch = assignment_epoch_;
+    command.assignment_digest = assignment_epoch_ ? de::fullAssignmentSignature(assignment_) : 0;
     for (int id = 0; id < de::kAgents; ++id)
       command.drone_to_slot[id] = assignment_[id];
     command.components = de::components(command.edge_keep_mask, assignment_);
@@ -608,6 +708,9 @@ class Agent {
   double weak_reconnect_distance_, weak_formation_scale_;
   double swap_gain_min_, swap_eval_period_, swap_cooldown_, forward_x_, forward_y_;
   bool swap_enabled_{false}, swap_armed_{false}, full_since_swap_{false};
+  std::string swap_scope_;
+  uint64_t assignment_epoch_{0};
+  std::unique_ptr<de::AllAgentAssignment> reassignment_;
   uint64_t session_, state_sequence_{0}, edge_sequence_{0}, swap_sequence_{0},
       transaction_sequence_{0};
   de::Assignment assignment_{};
@@ -615,6 +718,12 @@ class Agent {
   std::array<std::array<uint32_t, de::kColumns>, de::kAgents> peer_versions_{};
   std::array<std::array<uint32_t, de::kColumns>, de::kAgents> applied_versions_{};
   std::array<ros::Time, de::kAgents> applied_stamps_{};
+  std::array<uint64_t, de::kAgents> peer_epochs_{}, peer_digests_{}, applied_epochs_{}, applied_digests_{};
+  std::array<de::Assignment, de::kAgents> peer_assignments_{}, applied_assignments_{};
+  std::array<std::array<double, 3>, de::kAgents> velocities_{}, goals_{};
+  std::array<bool, de::kAgents> goal_valid_{};
+  std::array<double, 3> own_goal_{};
+  bool own_goal_valid_{false};
   std::array<de::Lease, de::kAgents> swap_writers_{};
   std::array<PendingSwap, de::kColumns> pending_{};
   std::array<std::vector<PendingSwap>, de::kColumns> history_{};

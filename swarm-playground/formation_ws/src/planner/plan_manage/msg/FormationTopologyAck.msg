@@ -7,6 +7,10 @@ uint32 edge_count
 uint32 edge_keep_mask
 uint32 weak_edge_mask
 uint32[4] assignment_versions
+uint64 assignment_epoch
+uint64 assignment_digest
+float64[3] assigned_goal
+bool goal_valid
 uint32[8] drone_to_slot
 int32 group_id
 float64 formation_scale

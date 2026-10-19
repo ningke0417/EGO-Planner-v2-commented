@@ -9,6 +9,7 @@
 #include <ego_planner/FormationTopologyCommand.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <plan_manage/distributed_edges.h>
+#include <plan_manage/distributed_assignment.h>
 
 namespace {
 namespace topology = ego_planner::distributed;
@@ -44,11 +45,28 @@ class Visualizer {
             for (int drone = 0; drone < topology::kAgents; ++drone)
               assignment[drone] = msg->drone_to_slot[drone];
             if (!topology::validAssignment(assignment)) return;
+            std::array<uint32_t, topology::kColumns> versions{};
+            std::copy(msg->assignment_versions.begin(),
+                      msg->assignment_versions.end(), versions.begin());
+            if (msg->assignment_epoch == 0) {
+              if (a.assignment_epoch != 0 || msg->assignment_digest != 0 ||
+                  assignment != topology::assignmentFromVersions(versions)) return;
+              for (int column = 0; column < topology::kColumns; ++column)
+                if (versions[column] < a.versions[column]) return;
+            } else {
+              if (msg->assignment_epoch < a.assignment_epoch ||
+                  msg->assignment_digest != topology::fullAssignmentSignature(assignment))
+                return;
+              if (msg->assignment_epoch == a.assignment_epoch &&
+                  (msg->assignment_digest != a.assignment_digest ||
+                   assignment != a.assignment)) return;
+            }
             a.mask = msg->edge_keep_mask;
             a.weak_mask = msg->weak_edge_mask;
             a.assignment = assignment;
-            std::copy(msg->assignment_versions.begin(),
-                      msg->assignment_versions.end(), a.versions.begin());
+            a.versions = versions;
+            a.assignment_epoch = msg->assignment_epoch;
+            a.assignment_digest = msg->assignment_digest;
             a.state_stamp = msg->header.stamp;
             a.state_received = ros::WallTime::now();
           });
@@ -75,6 +93,7 @@ class Visualizer {
     uint32_t weak_mask{0};
     topology::Assignment assignment{topology::identityAssignment()};
     std::array<uint32_t, topology::kColumns> versions{};
+    uint64_t assignment_epoch{0}, assignment_digest{0};
     ros::Time state_stamp, odom_stamp;
     ros::WallTime state_received, odom_received;
   };
@@ -110,8 +129,16 @@ class Visualizer {
     visualization_msgs::MarkerArray output;
     std::array<int, 5> counts{}; // normal, disagreement, cut, stale, weak
     topology::Assignment assignment = topology::identityAssignment();
+    uint64_t assignment_epoch = 0, assignment_digest = 0;
+    bool have_reference = false;
     for (const auto& agent : agents_)
-      if (fresh(agent)) { assignment = agent.assignment; break; }
+      if (fresh(agent) &&
+          (!have_reference || agent.assignment_epoch > assignment_epoch)) {
+        assignment = agent.assignment;
+        assignment_epoch = agent.assignment_epoch;
+        assignment_digest = agent.assignment_digest;
+        have_reference = true;
+      }
     for (int edge = 0; edge < topology::kEdges; ++edge) {
       const auto logical = topology::edges()[edge];
       const std::array<int, 2> pair{{
@@ -122,16 +149,23 @@ class Visualizer {
       const bool first = a.mask & (1u << edge), second = b.mask & (1u << edge);
       const bool first_weak = a.weak_mask & (1u << edge);
       const bool second_weak = b.weak_mask & (1u << edge);
+      const bool same_assignment = a.assignment == assignment &&
+          b.assignment == assignment &&
+          a.assignment_epoch == assignment_epoch &&
+          b.assignment_epoch == assignment_epoch &&
+          a.assignment_digest == assignment_digest &&
+          b.assignment_digest == assignment_digest &&
+          (assignment_epoch > 0 || a.versions == b.versions);
       const int state = !fresh(a) || !fresh(b) ? 3 :
-                        a.assignment != assignment || b.assignment != assignment ||
-                        a.versions != b.versions || first != second ||
+                        !same_assignment || first != second ||
                         first_weak != second_weak ? 1 :
                         first ? (first_weak ? 4 : 0) : 2;
       ++counts[state];
       Marker line = marker("distributed_edges", edge, Marker::LINE_LIST);
       Marker label = marker("distributed_edge_labels", edge, Marker::TEXT_VIEW_FACING);
       // Never draw an edge at invented coordinates for an unobserved endpoint.
-      if (a.odom_stamp.isZero() || b.odom_stamp.isZero() || (state == 2 && !show_cut)) {
+      if (!have_reference || a.odom_stamp.isZero() || b.odom_stamp.isZero() ||
+          !same_assignment || (state == 2 && !show_cut)) {
         line.action = label.action = Marker::DELETE;
       } else {
         static const std::array<std::array<float, 3>, 5> colors{{

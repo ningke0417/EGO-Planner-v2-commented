@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Marker integration test. Run on an empty, disposable ROS master."""
 import subprocess
+import signal
 import time
 
 import rosgraph
@@ -9,6 +10,15 @@ import rospy
 from ego_planner.msg import FormationTopologyAck
 from nav_msgs.msg import Odometry
 from visualization_msgs.msg import Marker, MarkerArray
+
+
+def assignment_digest(assignment):
+    """Collision-free permutation rank, matching fullAssignmentSignature()."""
+    rank = 0
+    for i, slot in enumerate(assignment):
+        smaller = sum(other < slot for other in assignment[i + 1:])
+        rank = rank * (8 - i) + smaller
+    return rank + 1
 
 
 def main():
@@ -32,9 +42,12 @@ def main():
     weak_masks = [0] * 8
     assignment = list(range(8))
     versions = [0] * 4
+    assignment_epoch = 0
+    digest = 0
     saved = {}
 
-    def pump(duration=0.8, omit_state=None, omit_odom=None, replay=False, invalid=False):
+    def pump(duration=0.8, omit_state=None, omit_odom=None, replay=False,
+             invalid=False, state_overrides=None):
         deadline = time.monotonic() + duration
         while time.monotonic() < deadline:
             for i in range(8):
@@ -67,6 +80,10 @@ def main():
                 msg.weak_edge_mask = weak_masks[i]
                 msg.drone_to_slot = assignment
                 msg.assignment_versions = versions
+                msg.assignment_epoch = assignment_epoch
+                msg.assignment_digest = digest
+                for field, value in (state_overrides or {}).get(i, {}).items():
+                    setattr(msg, field, value)
                 states[i].publish(msg)
                 saved[i] = msg
             time.sleep(0.03)
@@ -142,11 +159,55 @@ def main():
         check((0.15, 0.95, 0.95), 'swapped owners must supply logical edge evidence')
         assert abs(edge().points[0].x) < 1e-6
         assert abs(edge().points[0].y - 1.0) < 1e-6, 'edge must start at drone 4'
+
+        # A complete permutation can exchange arbitrary columns, not just rows.
+        assignment[:] = [3, 2, 1, 0, 7, 6, 5, 4]
+        assignment_epoch = 1
+        digest = assignment_digest(assignment)
+        masks[:] = [0] * 8
+        masks[3] = masks[2] = 1
+        pump()
+        check((0.15, 0.95, 0.95), 'arbitrary full-assignment endpoints should match')
+        assert abs(edge().points[0].x - 3.0) < 1e-6, 'edge must start at drone 3'
+        assert abs(edge().points[1].x - 2.0) < 1e-6, 'edge must end at drone 2'
+        pump(state_overrides={2: {'assignment_digest': digest + 1}})
+        check((0.65, 0.65, 0.65), 'invalid digest cannot renew an endpoint lease')
+        pump()
+        # Valid legacy packets must not roll a full assignment back to epoch 0.
+        pump(state_overrides={2: {
+            'assignment_epoch': 0, 'assignment_digest': 0,
+            'assignment_versions': [0] * 4, 'drone_to_slot': list(range(8))}})
+        check((0.65, 0.65, 0.65), 'legacy rollback cannot renew full-assignment state')
+        pump()
+
+        previous_assignment = list(assignment)
+        previous_digest = digest
+        assignment[:] = [1, 0, 2, 3, 5, 4, 6, 7]
+        assignment_epoch = 2
+        digest = assignment_digest(assignment)
+        masks[:] = [0] * 8
+        masks[1] = masks[0] = 1
+        pump(0.3, state_overrides={0: {
+            'assignment_epoch': 1, 'assignment_digest': previous_digest,
+            'drone_to_slot': previous_assignment}})
+        assert edge().action == Marker.DELETE, 'never draw mixed-assignment endpoints'
+        pump()
+        check((0.15, 0.95, 0.95), 'consistent newer assignment should recover')
+        assert abs(edge().points[0].x - 1.0) < 1e-6, 'edge must now start at drone 1'
+        pump(state_overrides={0: {
+            'drone_to_slot': list(range(8)), 'assignment_digest': 1}})
+        check((0.65, 0.65, 0.65), 'same-epoch conflicting maps cannot refresh state')
+        pump()
+        pump(state_overrides={0: {'drone_to_slot': [0] * 8}})
+        check((0.65, 0.65, 0.65), 'duplicate-slot assignments cannot refresh state')
+        pump()
+        check((0.15, 0.95, 0.95), 'valid full assignment recovers after rejection')
         print('PASS: missing positions, endpoint-only colors, weak stage, hide/delete, stale/replay, '
               'invalid ID, recovery, stale odometry, marker lifetime, swapped endpoints, '
+              'full permutations, bad digests, rollback/conflict rejection, mixed-epoch deletion, '
               'read-only graph', flush=True)
     finally:
-        process.terminate()
+        process.send_signal(signal.SIGINT)
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:

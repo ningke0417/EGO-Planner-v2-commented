@@ -1,6 +1,7 @@
 <launch>
     <arg name="distributed_enabled" default="false"/>
     <arg name="swap_enabled" default="false"/>
+    <arg name="swap_scope" default="all"/>
     <!-- One vehicle in a 2x4 rectangle.  Adjacent slot spacing is 1 m. -->
     <arg name="drone_id"/>
     <arg name="init_x"/>
@@ -76,6 +77,7 @@
             <param name="weak_reconnect_hold" value="0.3"/>
             <param name="weak_formation_scale" value="0.22"/>
             <param name="swap_enabled" value="$(arg swap_enabled)"/>
+            <param name="swap_scope" value="$(arg swap_scope)"/>
             <!-- Logical slots 0..3 are at x=+0.5, 4..7 at x=-0.5. -->
             <param name="formation_forward_x" value="1.0"/>
             <remap from="~odom" to="/drone_$(arg drone_id)_$(arg odom_topic)"/>

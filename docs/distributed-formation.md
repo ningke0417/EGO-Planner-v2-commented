@@ -24,8 +24,10 @@ roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch coordination_
 两个模式请分别启动、结束后再切换。随机地图入口
 `rectangle_8uav_sparse_random.launch` 也接受相同参数。未指定模式时保留集中式默认值。
 不要只依赖 Git 分支名判断运行模式。
-本次几何修订同时涉及 `plan_env`、`ego_planner` 和共享几何头，需完整执行
-`catkin_make -j2 -l2`；只替换 agent 可执行文件会缺少新的本机占用快照。
+几何修订涉及 `plan_env`、`ego_planner` 和共享几何头；八机换槽又增加
+`FormationAssignment` 并扩展状态、证据、拓扑及回执消息。因此更新后需完整执行
+`catkin_make -j2 -l2`、重新 source 并重启所有仿真节点，不能只替换 agent 可执行文件，
+也不能混用旧消息定义的规划器或显示节点。
 
 ## 本次实现
 
@@ -49,8 +51,9 @@ roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch coordination_
 - 默认租约 1.5 秒、普通重连持续 0.8 秒、弱重连持续 0.3 秒、切断保持 1 秒；序列号拒绝重复和乱序，
   进程 session 拒绝已见过的新 session 之前的旧报文。
 - 启动时 `drone_id == slot`；物理 ID 始终固定，运行中的槽位占用可按下述协议变更。
-- 可选的分布式同列前后换槽使用四个独立列版本号。每列仅交换两个槽位，
-  `drone_id` 仍是物理身份，不会重编号；逻辑编队边会按新槽位占用者映射到物理无人机。
+- 可选换槽的默认范围为 `swap_scope:=all`：八机参与完整槽位排列的重新分配，
+  允许跨列及多机轮换；`swap_scope:=column` 保留原四组前后交换。`drone_id` 始终
+  是物理身份，不会重编号；逻辑编队边会按新槽位占用者映射到物理无人机。
 - 每机 FSM 只接收本机 agent 的拓扑，并有独立 1.5 秒 watchdog。
   agent 失联后，本机取消全部编队边，普通障碍/机间轨迹避碰逻辑仍然保留。
 - 分布式启动采用 fail-closed 屏障：每个 agent 必须先获得全部 10 条边的双端新鲜
@@ -65,7 +68,8 @@ roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch coordination_
 - 8 个规划器直接在 `/swarm/trajectories` 互换轨迹，无共享 UDP 中继进程。
 
 本机拓扑话题 `/drone_i_formation_agent/topology` 是本机内部接口；
-不同无人机的 epoch 不比较。FSM 应用状态发布在 `/drone_i/formation_applied`。
+不同无人机的拓扑消息 `epoch` 不比较；完整换槽的 `assignment_epoch` 则是全员共享的
+分配版本，两者不要混淆。FSM 应用状态发布在 `/drone_i/formation_applied`。
 集中式 `/formation_backend/topology_command` 在此模式没有发布者或控制订阅者。
 
 ## 与本机规划器一致的几何判据
@@ -91,34 +95,99 @@ agent 只订阅本机快照，并读取本机规划器初始化参数的栅格�
 原有距离、重叠分数、弱恢复靠近门槛和重连计时规则不因这次几何修订而放宽。
 旧几何构造接口保留，集中式判据和规划器本身的障碍膨胀计算不变。
 
-## 分布式同列换槽（实验功能）
+## 八机完整换槽（实验功能）
 
-`rectangle_8uav_fixed_split_merge_wall.launch` 与随机场景接受
-`swap_enabled:=true|false`，默认关闭；要试验时显式设置 `swap_enabled:=true`。
-这项功能只允许当前占据同一横向列的前、后槽位互换：
-`0↔4、1↔5、2↔6、3↔7`。无人机的物理 ID 不变，交换的是编队槽位与最终航点。
-四列互不争抢槽位，因此可分别维护版本号，无固定全局分配节点。
+两种场景均接受 `swap_enabled:=true|false` 和 `swap_scope:=all|column`。
+随机场景的 `swap_enabled` 默认 **true**，固定墙默认 **false**；范围默认均为
+**all**。这两个开关只控制分布式换槽，不改变集中式协调路径。
 
-仅在启动屏障释放、完整边表曾经建立且随后发生断边后，agent 才评估换槽。
-按当前矩形槽位的几何方向（前排槽位 x=+0.5、后排 x=-0.5），后槽位占用者
-超过前槽位占用者时，计算交换对两机平方位置误差的收益。
-默认收益至少 `0.15 m²`、候选持续 `0.5 s`，上次交换后冷却 `8 s`。
-新槽位所涉及的边必须在其端点本机地图中具有已知自由走廊，且两端距离不超过
-`3 m`。候选只使用现有的新鲜状态；额外通信仅在提出交换时进行。
+```bash
+# 随机环境：显式开启八机跨列换槽（也是当前分布式随机入口的默认配置）。
+roslaunch ego_planner rectangle_8uav_sparse_random.launch \
+  coordination_mode:=distributed swap_enabled:=true swap_scope:=all
 
-较小物理 ID 的一端发出 `PREPARE`；8 个 agent 都验证并回 `ACK` 后才发布
-`COMMIT`。未得到全员确认时保持原分配。提交消息在成员状态和规划器应用状态均
-确认新列版本之前持续传播；已提交的版本链保留在进程内，发现重启成员落后时
-按版本顺序重发。每个 agent 将槽位排列、列版本和边掩码作为同一条本机
-拓扑快照交给规划器；受影响边的旧证据被清空，必须由新物理端点重新提供双端 KEEP。
-其他列的边证据继续有效。接收节点会拒绝旧版本或错误物理端点的边证据。
+# 固定墙：需显式开启，不能只设置 swap_scope。
+roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch \
+  coordination_mode:=distributed swap_enabled:=true swap_scope:=all
 
-这只解决两机互换造成的局部逆序，不解决三机轮换或全局最优分配。通信分区期间，
-已经看到 COMMIT 的节点和尚未看到的节点可能暂时使用不同槽位；边证据按列版本
-关闭受影响的约束，机间避碰仍由规划器负责。实机跨网部署仍需传输新
-`FormationSlotSwap` 消息并验证时钟与丢包恢复。
-默认仍不启用。已在一个随机地图种子上观察到实际提交，但仍需统计更多地图的
-触发率、轨迹平滑性和不同通信故障场景。
+# 对照：退回原四组前后交换，或完全关闭换槽。
+roslaunch ego_planner rectangle_8uav_sparse_random.launch \
+  coordination_mode:=distributed swap_enabled:=true swap_scope:=column
+roslaunch ego_planner rectangle_8uav_sparse_random.launch \
+  coordination_mode:=distributed swap_enabled:=false
+```
+
+这些命令应分别运行，停止上一轮后再启动下一轮。启动时可从每机
+`[ASSIGNMENT_CONFIG]` 日志检查实际开关与范围。全新独立实验应使用全新 ROS master；
+不要在仍有节点运行时删除换槽事务日志。
+
+### 分配目标、触发和代价
+
+八个矩形槽位及其最终航点保持不变，但不再规定某个物理编号必须回到原槽位。
+例如原属左侧的飞机绕障后已经位于右侧，可以接手右侧槽位，减少恢复原编号顺序
+造成的横穿。重新分配必须是一对一的完整排列：每机一个槽位、每个槽位恰有一机。
+它不要求队伍必须分成 4+4，也不会把物理 ID 改成槽位编号。
+
+启动屏障释放、完整边表曾建立且随后出现断边后才激活评估；之后无需等待十条边
+全部恢复，即可在末段为恢复队形寻找候选。还要求八机状态和规划器回执新鲜、
+共同确认当前分配，且所有成员到各自当前最终目标的距离均不超过 **8 米**。
+`reassign_goal_window=8.0` 限制在末段评估；进入
+`reassign_lock_distance=0.8` 以内的成员只保留自己的当前槽位，其报价行的其他
+槽位均不可用，避免到站前再换目标。这是逐机锁定，不是有一机到站就冻结全队：
+其他尚未到站的成员仍可交换剩余槽位。稳定保持门槛只检查本轮真正改变槽位的
+成员距离，并在确认时再次拒绝移动已进入锁定范围的本机。这不是识别地图中
+“最后一个障碍物”的全局真值规则，也不保证一定在横向归位开始前触发。
+
+每机只使用自己的新鲜局部地图，认证当前位置到八个候选目标的已知空闲直线走廊，
+并上报本机的一行代价。未知区域、障碍或过期地图均不能出有效低价。
+代价包括剩余直线距离和与当前速度方向不一致的惩罚；每架改变槽位的飞机另加
+`reassign_switch_penalty=0.15`。旋转协调者收集八行后，用精确 8×8 最小代价分配
+求解完整排列，平局优先保留现分配，而不是让多架飞机分别抢最近目标。
+
+候选必须同时满足总净收益至少 `swap_gain_min=0.15`、相对收益至少
+`reassign_relative_gain=0.05`（5%），且同一候选持续
+`reassign_stable_hold=0.6` 秒；提交后冷却 `swap_cooldown=8.0` 秒。
+以上是距离型代价，不是旧同列规则的平方距离 `m²`。评估周期由
+`reassign_period=0.5` 控制。这些是 agent 的启动时私有参数，不支持运行中热切换。
+
+直线认证是保守限制：即使规划器能绕路到达，只要当前直线穿过未知区域或障碍，
+该槽位仍不参与此次有效报价；八机（包括已锁定的成员）的当前目标仍须认证为
+有限代价基线，当前目标无法认证时，不据此宣称有有限收益。
+因此本机制可能推迟或放弃换槽，不是全局绕障路径最优解。实际新轨迹仍由各机
+规划器从当前位置、速度重新生成，不能把分配成功当作无碰撞证明。
+
+### 协商、恢复与限制
+
+完整换槽使用 `/swarm/assignment` 的 `FormationAssignment` 消息。初始完整分配
+版本为 `assignment_epoch=1`，每轮协调者是物理 ID `assignment_epoch % 8`，
+随提交版本轮换；没有新增固定中央分配节点。协议是分布式局部认证报价加轮换
+协调求解，不是经典完全无协调者的价格迭代拍卖算法。
+
+`REQUEST/BID` 固定本轮的成员 session、状态序号、位置、速度、槽位目标和代价矩阵；
+`PREPARE` 给出完整候选。八机各自复核本机报价及目标认证，预留同一候选后回
+`ACK`。只有匹配同一候选的八个确认构成完整证书，协调者才能决定 `COMMIT`。
+少一个确认、状态失效或候选不一致时保持旧目标。参与者不能自行因超时清除已投票
+的预留；需等待协调者持久记录并传播的 `ABORT` 才能取消并重试，避免旧提交消息与
+新提案冲突。协调者不可恢复时允许保守等待，不保证任意故障下任务持续推进。
+
+每机通过 ROS 参数服务器 `/distributed_assignment_journal/drone_i` 保存本机事务和
+已提交分配，使同一 master 内的 agent 进程重启可恢复，而不是重新从身份排列投票。
+提交决定会重传以修复成员状态和规划器应用状态的落后；该日志**不等于磁盘持久化**，
+ROS master 丢失或整组状态丢失后的恢复不在此保证范围内。
+
+提交后将槽位排列、`assignment_epoch` 和完整排列摘要一起送给本机规划器；
+更新其槽位、最终航点与编队邻居，清空全部十条边的旧证据，按新物理端点重新授权。
+边证据也携带分配版本，旧版本不能给新邻居接边。八机的物理轨迹不会全局原子切换：
+通信传播期间目标应用可短暂不同步，机间避碰和急停仍由轨迹规划器负责。
+这些保证依赖 ROS1 单 master、受信任成员和有效时钟，不是拜占庭共识或实机安全证明。
+
+### 同列兼容模式
+
+`swap_scope:=column` 保留原四组同列前后槽位交换：`0↔4、1↔5、2↔6、3↔7`，
+按当前槽位占用者计算，不是永久绑定这四对物理 ID。四列分别维护版本号，并沿用
+原 `FormationSlotSwap` 协议、平方位置误差收益至少 `0.15 m²`、候选持续 `0.5 s`、
+冷却 `8 s` 以及新相邻边已知空闲且不超过 `3 m` 的检查。它只能改善同列前后逆序，
+不能解决跨列或三机轮换，亦不具备新完整协议的参数服务器事务恢复语义。
 
 ## 分布式连接线显示
 
@@ -175,12 +244,12 @@ python3 src/planner/plan_manage/test/test_distributed_visualizer.py
 1. ROS1 发现仍依赖 master；仿真环境真值地图仍集中生成，但编队节点只读取本机观测。
 2. 跨机部署需要时钟同步、每机 ROS/桥接配置，以及新状态/证据消息的网络传输。
    本次没有把新消息加入现有 UDP 序列化协议。
-3. 地图沿用静态环境假设。当前 8 机固定墙和随机场景均使用 180 度水平感知，后向边
-   可能因缺少双方已知空闲证据而长期保持 CUT；未知区域不会被当作空闲来强行恢复
-   完整编队。
+3. 地图沿用静态环境假设。当前 8 机固定墙和随机场景的分布式观测使用 360 度水平
+   感知；若改小视场，后向边可能缺少双方已知空闲证据。未知区域不会被当作空闲
+   来强行恢复完整编队或给换槽目标报价。
 4. 当前实现了 0.22 弱连接权重，但没有中央版本尚未启用的 0.25/0.30 多级权重爬升、
-   前排到后排传播和动态 Hungarian 换槽。正常边仍使用 0.15 权重，不能假设与集中式
-   具有相同轨迹或到达率。
+   前排到后排传播。当前末段八机分配是本节描述的独立局部认证协议，并不等价于中央
+   动态换槽流程。正常边仍使用 0.15 权重，不能假设与集中式具有相同轨迹或到达率。
 5. 没有将断联无人机从避碰模型中直接删除。实际运动不再符合最后轨迹时，
    仍需要相对感知或有界不确定性/制动策略；不能保证任意网络分区下任务继续且绝对安全。
 6. session 使用本机墙钟生成，要求进程重启时墙钟不倒退；长时间暂停后仅凭租约
@@ -190,6 +259,8 @@ python3 src/planner/plan_manage/test/test_distributed_visualizer.py
 
 ```bash
 catkin_make -j2 -l2 run_tests_ego_planner_gtest_test_distributed_edges
+catkin_make -j2 -l2 run_tests_ego_planner_gtest_test_distributed_assignment
+catkin_make -j2 -l2 run_tests_ego_planner_gtest_test_distributed_assignment_protocol
 catkin_make -j2 -l2 run_tests_ego_planner_gtest_test_tristate_voxel_field
 catkin_test_results build/test_results/ego_planner
 ```
@@ -198,6 +269,31 @@ catkin_test_results build/test_results/ego_planner
 不同交付顺序的一致结果，以及单成员失联只切断相关边。
 几何测试另覆盖规划器取整边界、不重复膨胀、占用覆盖粗空闲证据、未知格断开、
 细小斜交障碍及高于 1.9 米的障碍。
+
+八机分配单元测试 `test_distributed_assignment` 覆盖完整排列、跨列/多机轮换、
+不可用报价、平局保持、切换惩罚、收益门槛、稳定保持和冷却。新增 ROS 回归脚本：
+
+- `test/test_distributed_assignment_planner.py`：专用空 master `11337`，启动一个真实
+  规划器，在关闭飞行屏障的条件下验证槽位应用、目标更新和旧/非法版本拒绝。
+- `test/test_distributed_assignment_runtime.py`：专用 master `11336`，需先单独启动
+  八个真实 agent（正常话题重映射、`swap_enabled=true`、`swap_scope=all`，无真实规划器
+  和传感器）。脚本注入合成地图、里程计与规划器回执，验证启动、分裂后的跨列分配、
+  全员版本一致及提交证书；增加 `--allow-fault-injection` 会暂时停止发布 7 号里程计，
+  验证成员状态过期时不提交、恢复后收敛。不得用于真实实验 master。
+- `test_distributed_assignment_protocol_runtime`：手动运行的协议故障回归可执行文件，
+  仅接受全新独立 master `11339`。使用真实协议对象和 ROS 消息验证缺少第八个确认时
+  保留目标并持久 ABORT、重试后提交、协调者带未决预留重启后的取消恢复，以及多轮
+  提交历史和取消黑名单恢复。可在编译、source 后使用以下命令运行；应先在另一个
+  终端启动全新的 `roscore -p 11339`，不要复用已有实验 master：
+
+  ```bash
+  ROS_MASTER_URI=http://127.0.0.1:11339 \
+    rosrun ego_planner test_distributed_assignment_protocol_runtime
+  ```
+
+上面两个 Python 脚本的路径相对 `src/planner/plan_manage/`；规划器脚本不验证飞行，
+八 agent 脚本和协议可执行文件仅验证合成输入下的协商。三者均不能替代真实八机
+轨迹、安全距离、末段横穿减少率及多种子到达率测试。
 
 运行分布式仿真后可执行只读 smoke 检查：
 

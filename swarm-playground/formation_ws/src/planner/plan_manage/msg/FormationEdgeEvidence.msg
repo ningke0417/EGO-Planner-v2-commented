@@ -4,6 +4,8 @@ uint64 session
 uint64 sequence
 uint32 assignment_generation
 uint32[4] assignment_versions
+uint64 assignment_epoch
+uint64 assignment_digest
 uint32 edge_index
 uint32 observer_id
 uint32 peer_id

@@ -1,6 +1,7 @@
 <launch>
     <arg name="coordination_mode" default="centralized" doc="centralized or distributed"/>
     <arg name="swap_enabled" default="false"/>
+    <arg name="swap_scope" default="all" doc="all: eight-agent reassignment; column: legacy front/rear swaps"/>
     <arg name="distributed_enabled" value="$(eval {'centralized': False, 'distributed': True}[arg('coordination_mode')])"/>
     <param name="/distributed_swap_enabled" value="$(arg swap_enabled)"/>
     <!-- Eight-UAV dynamic split/merge experiment in the unchanged wall map. -->
@@ -200,6 +201,7 @@
     <include file="$(find ego_planner)/launch/rectangle_8uav_member.launch">
         <arg name="distributed_enabled" value="$(arg distributed_enabled)"/>
         <arg name="swap_enabled" value="$(arg swap_enabled)"/>
+        <arg name="swap_scope" value="$(arg swap_scope)"/>
         <arg name="initial_assignment_enabled" value="$(arg initial_assignment_enabled)"/>
         <arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="safety_distance" value="$(arg safety_distance)"/>
