@@ -170,8 +170,10 @@
     </include>
     <!-- trajectory server -->
     <node pkg="ego_planner" name="drone_$(arg drone_id)_traj_server" type="traj_server" output="screen">
+        <param name="drone_id" value="$(arg drone_id)"/>
         <remap from="position_cmd" to="drone_$(arg drone_id)_planning/pos_cmd"/>
         <remap from="~planning/trajectory" to="drone_$(arg drone_id)_planning/trajectory"/>
+        <remap from="~execution_state" to="/swarm/execution_state"/>
         <param name="traj_server/time_forward" value="1.0" type="double"/>
     </node>
     <!-- use simulator -->

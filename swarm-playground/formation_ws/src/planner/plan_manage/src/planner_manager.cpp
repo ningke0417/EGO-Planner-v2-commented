@@ -1,6 +1,7 @@
 // #include <fstream>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <plan_manage/planner_manager.h>
 #include <thread>
 #include "visualization_msgs/Marker.h" // zx-todo
@@ -64,6 +65,13 @@ namespace ego_planner
   void EGOPlannerManager::initPlanModules(ros::NodeHandle &nh, PlanningVisualization::Ptr vis)
   {
     /* read algorithm parameters */
+    nh.param("execution_feedback_timeout", execution_feedback_timeout_, 0.5);
+    nh.param("peer_trajectory_timeout", peer_trajectory_timeout_, 1.5);
+    nh.param("fsm/planning_handoff_budget", planning_budget_, 0.25);
+    if (!std::isfinite(execution_feedback_timeout_) || execution_feedback_timeout_ <= 0.0 ||
+        !std::isfinite(peer_trajectory_timeout_) || peer_trajectory_timeout_ <= 0.0 ||
+        !std::isfinite(planning_budget_) || planning_budget_ <= 0.0)
+      throw std::runtime_error("invalid peer execution/trajectory timeout");
 
     nh.param("manager/max_vel", pp_.max_vel_, -1.0);
     nh.param("manager/max_acc", pp_.max_acc_, -1.0);
@@ -159,7 +167,7 @@ namespace ego_planner
       const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
       const Eigen::Vector3d &local_target_pt, const Eigen::Vector3d &local_target_vel,
       const bool flag_polyInit, const bool flag_randomPolyTraj, const double &ts,
-      poly_traj::MinJerkOpt &initMJO)
+      poly_traj::MinJerkOpt &initMJO, const double world_start)
   {
 
     static bool flag_first_call = true;
@@ -243,7 +251,10 @@ namespace ego_planner
       }
 
       /* the trajectory time system is a little bit complicated... */
-      double passed_t_on_lctraj = ros::Time::now().toSec() - traj_.local_traj.start_time;
+      const double initialization_time = std::isfinite(world_start) && world_start > 0.0
+                                             ? world_start : ros::Time::now().toSec();
+      const double passed_t_on_lctraj =
+          std::max(0.0, initialization_time - traj_.local_traj.start_time);
       double t_to_lc_end = traj_.local_traj.duration - passed_t_on_lctraj;
       if ( t_to_lc_end < 0 )
       {
@@ -267,12 +278,14 @@ namespace ego_planner
       {
         if (t < t_to_lc_end)
         {
-          innerPs.col(i) = traj_.local_traj.traj.getPos(t + passed_t_on_lctraj);
+          innerPs.col(i) = traj_.local_traj.traj.getPos(
+              std::max(0.0, std::min(traj_.local_traj.duration, t + passed_t_on_lctraj)));
         }
         else if (t <= t_to_lc_tgt)
         {
           double glb_t = t - t_to_lc_end + traj_.global_traj.last_glb_t_of_lc_tgt - traj_.global_traj.global_start_time;
-          innerPs.col(i) = traj_.global_traj.traj.getPos(glb_t);
+          innerPs.col(i) = traj_.global_traj.traj.getPos(
+              std::max(0.0, std::min(traj_.global_traj.duration, glb_t)));
         }
         else
         {
@@ -334,14 +347,17 @@ namespace ego_planner
   }
 
   bool EGOPlannerManager::setLocalTrajFromOpt(const poly_traj::MinJerkOpt &opt,
-                                              const bool touch_goal)
+                                              const bool touch_goal,
+                                              const double world_start)
   {
     poly_traj::Trajectory traj = opt.getTraj();
     Eigen::MatrixXd cps = opt.getInitConstraintPoints(getCpsNumPrePiece());
     PtsChk_t pts_to_check;
     bool ret = ploy_traj_opt_->computePointsToCheck(traj, ConstraintPoints::two_thirds_id(cps, touch_goal), pts_to_check);
     if (ret)
-      traj_.setLocalTraj(traj, pts_to_check, ros::Time::now().toSec());
+      traj_.setLocalTraj(traj, pts_to_check,
+                        std::isfinite(world_start) && world_start > 0.0
+                            ? world_start : ros::Time::now().toSec());
 
     return ret;
   }
@@ -353,7 +369,8 @@ namespace ego_planner
       const Eigen::Vector3d &formation_end_pt, const bool flag_polyInit,
       const bool flag_randomPolyTraj, const bool touch_goal)
   {
-
+    const double candidate_world_start = ros::Time::now().toSec();
+    const ros::WallTime deadline = ros::WallTime::now() + ros::WallDuration(planning_budget_);
     static int count = 0;
     printf("\033[47;30m\n[drone %d replan %d]==============================================\033[0m\n",
            pp_.drone_id, count++);
@@ -379,7 +396,7 @@ namespace ego_planner
 
     poly_traj::MinJerkOpt initMJO;
     if (!computeInitState(start_pt, start_vel, start_acc, local_target_pt, local_target_vel,
-                          flag_polyInit, flag_randomPolyTraj, ts, initMJO))
+                          flag_polyInit, flag_randomPolyTraj, ts, initMJO, candidate_world_start))
     {
       return false;
     }
@@ -421,7 +438,10 @@ namespace ego_planner
       double final_cost, min_cost = 999999.0;
       for (int i = trajs.size() - 1; i >= 0; i--)
       {
+        if (ros::WallTime::now() >= deadline) break;
         ploy_traj_opt_->setConstraintPoints(trajs[i]);
+        ploy_traj_opt_->setPlanningStartTime(candidate_world_start);
+        ploy_traj_opt_->setPlanningDeadline(deadline);
         if (ploy_traj_opt_->optimizeTrajectory(headState, tailState,
                                                innerPts, initTraj.getDurations(),
                                                cstr_pts, final_cost))
@@ -464,6 +484,8 @@ namespace ego_planner
       headState << initTraj.getJuncPos(0), initTraj.getJuncVel(0), initTraj.getJuncAcc(0);
       tailState << initTraj.getJuncPos(PN), initTraj.getJuncVel(PN), initTraj.getJuncAcc(PN);
       double final_cost;
+      ploy_traj_opt_->setPlanningStartTime(candidate_world_start);
+      ploy_traj_opt_->setPlanningDeadline(deadline);
       flag_success = ploy_traj_opt_->optimizeTrajectory(headState, tailState,
                                                         innerPts, initTraj.getDurations(),
                                                         cstr_pts, final_cost);
@@ -490,7 +512,7 @@ namespace ego_planner
          << ",optimize:" << t_opt.toSec()
          << ",avg_time=" << sum_time / count_success << endl;
 
-    if (!setLocalTrajFromOpt(best_MJO, touch_goal))
+    if (!setLocalTrajFromOpt(best_MJO, touch_goal, candidate_world_start))
     {
       visualization_->displayFailedList(cstr_pts, 0);
       continous_failures_count_++;
@@ -767,20 +789,23 @@ namespace ego_planner
 
   bool EGOPlannerManager::checkCollision(int drone_id)
   {
-    if (traj_.local_traj.start_time < 1e9) // It means my first planning has not started
+    if (drone_id < 0 || drone_id >= static_cast<int>(traj_.swarm_traj.size()) ||
+        traj_.swarm_traj[drone_id].drone_id != drone_id ||
+        traj_.local_traj.traj.getPieceNum() == 0 || traj_.local_traj.duration <= 0.0 ||
+        !std::isfinite(traj_.local_traj.start_time) || traj_.local_traj.start_time <= 0.0)
       return false;
 
-    double my_traj_start_time = traj_.local_traj.start_time;
-    double other_traj_start_time = traj_.swarm_traj[drone_id].start_time;
-
-    double t_start = max(my_traj_start_time, other_traj_start_time);
-    double t_end = min(my_traj_start_time + traj_.local_traj.duration * 2 / 3,
-                       other_traj_start_time + traj_.swarm_traj[drone_id].duration);
+    const double reference_now = ros::Time::now().toSec();
+    const double my_traj_start_time = traj_.local_traj.start_time;
+    const double t_start = std::max(my_traj_start_time, reference_now);
+    const double t_end = my_traj_start_time + traj_.local_traj.duration * 2.0 / 3.0;
 
     for (double t = t_start; t < t_end; t += 0.03)
     {
-      if ((traj_.local_traj.traj.getPos(t - my_traj_start_time) -
-           traj_.swarm_traj[drone_id].traj.getPos(t - other_traj_start_time))
+      const PeerPrediction peer = predictPeer(traj_.swarm_traj[drone_id], t,
+          reference_now, execution_feedback_timeout_, peer_trajectory_timeout_);
+      if (!peer.valid) continue;
+      if ((traj_.local_traj.traj.getPos(t - my_traj_start_time) - peer.position)
               .norm() < getSwarmClearance())
       {
         return true;

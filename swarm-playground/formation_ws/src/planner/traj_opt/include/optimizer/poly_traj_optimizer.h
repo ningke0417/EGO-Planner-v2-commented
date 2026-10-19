@@ -128,7 +128,13 @@ namespace ego_planner
     double subgroup_route_intent_weight_{80.0};
     double subgroup_route_intent_corridor_half_width_{0.25};
 
-    double t_now_;
+    double t_now_{0.0};
+    double planning_start_time_{-1.0};
+    double peer_reference_time_{0.0};
+    double execution_feedback_timeout_{0.5};
+    double peer_trajectory_timeout_{1.5};
+    double planning_budget_{0.25};
+    ros::WallTime pending_deadline_, active_deadline_;
 
   public:
     PolyTrajOptimizer() {}
@@ -143,6 +149,8 @@ namespace ego_planner
 
     /* set variables */
     void setParam(ros::NodeHandle &nh);
+    void setPlanningStartTime(const double world_start) { planning_start_time_ = world_start; }
+    void setPlanningDeadline(const ros::WallTime& deadline) { pending_deadline_ = deadline; }
     void setEnvironment(const GridMap::Ptr &map);
     void setControlPoints(const Eigen::MatrixXd &points);
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);

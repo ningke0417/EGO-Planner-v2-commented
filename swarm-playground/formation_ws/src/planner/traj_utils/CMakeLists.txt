@@ -22,6 +22,7 @@ add_message_files(
   DataDisp.msg
   PolyTraj.msg
   MINCOTraj.msg
+  TrajectoryExecution.msg
   )
   
 # Generate added messages and services with any dependencies listed here

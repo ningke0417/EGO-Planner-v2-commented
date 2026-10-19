@@ -6,9 +6,12 @@
 #include <array>
 #include <iostream>
 #include <sstream>
+#include <memory>
+#include <mutex>
 #include <nav_msgs/Path.h>
 #include <sensor_msgs/Imu.h>
 #include <ros/ros.h>
+#include <ros/callback_queue.h>
 #include <std_msgs/Empty.h>
 #include <std_msgs/Bool.h>
 #include <std_msgs/Float64.h>
@@ -29,6 +32,7 @@
 #include <traj_utils/planning_visualization.h>
 #include <traj_utils/PolyTraj.h>
 #include <traj_utils/MINCOTraj.h>
+#include <traj_utils/TrajectoryExecution.h>
 #include <ego_planner/FormationTopologyAck.h>
 #include <ego_planner/FormationTopologyCommand.h>
 
@@ -128,6 +132,22 @@ namespace ego_planner
     ros::Time subgroup_route_intent_stamp_;
     ros::Time subgroup_route_intent_last_replan_;
     ros::Time last_assignment_ack_stamp_;
+    ExecutionFeedback own_execution_;
+    // Readiness is non-spatial and must never enter peer position prediction.
+    ExecutionFeedback own_readiness_;
+    bool readiness_heartbeat_fresh_{false};
+    std::vector<ros::Time> peer_execution_mismatch_since_;
+    std::mutex execution_inbox_mutex_;
+    std::vector<traj_utils::TrajectoryExecution::ConstPtr> execution_inbox_;
+    std::vector<traj_utils::MINCOTraj::ConstPtr> trajectory_inbox_;
+    nav_msgs::Odometry::ConstPtr odometry_inbox_;
+    ros::CallbackQueue execution_queue_;
+    std::unique_ptr<ros::AsyncSpinner> execution_spinner_;
+    ros::Time odom_stamp_, last_plan_publish_stamp_, execution_hold_since_, last_hold_request_;
+    bool require_execution_feedback_{true};
+    bool execution_replan_required_{false};
+    double execution_feedback_timeout_{0.5}, peer_trajectory_timeout_{1.5};
+    double odometry_timeout_{0.25}, planning_handoff_budget_{0.25}, planning_entry_gap_{0.3};
 
     bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_, touch_goal_, mandatory_stop_;
     bool first_wall_violation_latched_{false};
@@ -148,7 +168,8 @@ namespace ego_planner
     /* ROS utils */
     ros::NodeHandle node_;
     ros::Timer exec_timer_, safety_timer_;
-    ros::Subscriber waypoint_sub_, odom_sub_, trigger_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, manual_split_sub_, dynamic_topology_sub_, topology_command_sub_, split_formation_scale_sub_, split_progress_sync_scale_sub_, subgroup_route_intent_sub_, initial_assignment_sub_;
+    ros::Subscriber waypoint_sub_, odom_sub_, trigger_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, manual_split_sub_, dynamic_topology_sub_, topology_command_sub_, split_formation_scale_sub_, split_progress_sync_scale_sub_, subgroup_route_intent_sub_, initial_assignment_sub_, execution_sub_;
+    ros::Publisher execution_hold_pub_;
     ros::Publisher poly_traj_pub_, data_disp_pub_, broadcast_ploytraj_pub_, heartbeat_pub_, ground_height_pub_, formation_group_pub_, topology_ack_pub_, assignment_ack_pub_, subgroup_route_intent_status_pub_, safety_status_pub_, first_wall_violation_pub_, planning_metrics_pub_;
     ros::Time last_safety_status_stamp_;
     uint64_t planning_attempt_count_{0};
@@ -163,6 +184,16 @@ namespace ego_planner
 
     /* safety */
     void checkCollisionCallback(const ros::TimerEvent &e);
+    void executionCallback(const traj_utils::TrajectoryExecution::ConstPtr &msg);
+    void receiveExecution(const traj_utils::TrajectoryExecution::ConstPtr &msg);
+    void receiveOdometry(const nav_msgs::Odometry::ConstPtr &msg);
+    void receivePeerTrajectory(const traj_utils::MINCOTraj::ConstPtr &msg);
+    void consumeExecution();
+    bool freshOdometry() const;
+    bool executorReady() const;
+    bool executionFromOdometry() const;
+    bool enforceExecutionConsistency();
+    void requestExecutionHold();
     bool callEmergencyStop(Eigen::Vector3d stop_pos);
     bool callEmergencyEscape(const Eigen::Vector3d &start_pos,
                              const Eigen::Vector3d &free_pos);

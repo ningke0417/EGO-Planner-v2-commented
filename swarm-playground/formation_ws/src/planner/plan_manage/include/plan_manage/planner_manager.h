@@ -32,7 +32,8 @@ namespace ego_planner
         const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel,
         const Eigen::Vector3d &start_acc, const Eigen::Vector3d &local_target_pt,
         const Eigen::Vector3d &local_target_vel, const bool flag_polyInit,
-        const bool flag_randomPolyTraj, const double &ts, poly_traj::MinJerkOpt &initMJO);
+        const bool flag_randomPolyTraj, const double &ts, poly_traj::MinJerkOpt &initMJO,
+        const double world_start = -1.0);
     bool reboundReplan(
         const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel,
         const Eigen::Vector3d &start_acc, const Eigen::Vector3d &end_pt,
@@ -73,7 +74,8 @@ namespace ego_planner
                                 const Eigen::Vector3d &direction,
                                 const double gain = 1.0);
     bool setLocalTrajFromOpt(const poly_traj::MinJerkOpt &opt,
-                             const bool touch_goal);
+                             const bool touch_goal,
+                             const double world_start = -1.0);
     bool violatesWallCollisionGuard(const Eigen::Vector3d &position) const;
     bool segmentViolatesWallCollisionGuard(
         const Eigen::Vector3d &start,
@@ -100,6 +102,9 @@ namespace ego_planner
     double wall_size_y_{0.0};
     double wall_safety_distance_{0.0};
     double wall_guard_check_horizon_{3.0};
+    double execution_feedback_timeout_{0.5};
+    double peer_trajectory_timeout_{1.5};
+    double planning_budget_{0.25};
 
     bool isInsideWallGuard(const Eigen::Vector3d &position) const;
 

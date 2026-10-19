@@ -56,6 +56,18 @@ roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch \
 目标仍须有有效认证；收益不足或确认不全就保留原目标。新消息和规划器接口更新后需完整编译
 `catkin_make -j2 -l2`、重新 source 并重启仿真，不能只编译 agent。
 
+轨迹执行增加了 `/swarm/execution_state` 回执：它表示执行器实际发出的指令状态，
+不是机体 odom。规划、优化和执行保留同一绝对开始时间；暂停/到站飞机不再按旧轨迹
+的末速度继续外推。心跳失联或安全暂停后，即使心跳恢复也必须用新鲜里程计重新规划，
+不能自动接着跑旧路径。回执默认有效期 0.5 秒，本机 odom 和候选交接预算均为
+0.25 秒；已知邻机状态过期时默认请求本机保持，而不假定它继续运动。
+这些是指令层防护，不是实机瞬时制动或无碰撞保证。新增 `traj_utils/TrajectoryExecution`
+消息后应完整重新编译工作空间、source 并重启所有节点，不能混用旧执行器。
+`WAITING` 只表示执行器就绪，不表示飞机在原点；单执行器重启支持重新握手，多执行器
+同时重启可能因过期邻机保护保守互等。
+参数、暂停握手、兼容路径及独立测试见
+[轨迹绝对时间与执行状态](docs/distributed-formation.md#轨迹绝对时间与执行状态)。
+
 固定墙环境：
 roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch
 随机障碍环境：
@@ -93,7 +105,7 @@ source /opt/ros/noetic/setup.zsh
 source devel/setup.zsh
 编队协调失效，规划和运动继续：
 rosnode kill /drone_1_formation_agent
-规划继续，但轨迹无法执行，产生重规划风暴：
+执行器失联，规划器在执行回执超时后阻止继续发布运动计划；需先恢复执行器再恢复任务：
 rosnode kill /drone_1_traj_server
-不再规划，traj_server 检测心跳丢失并保持最后位置：
+不再规划，traj_server 检测心跳丢失并保持最后指令位置，恢复心跳后仍需新轨迹：
 rosnode kill /drone_1_ego_planner_node

@@ -2,6 +2,7 @@
 #include <plan_manage/ego_replan_fsm.h>
 
 #include <limits>
+#include <stdexcept>
 #include <plan_manage/distributed_edges.h>
 
 namespace ego_planner
@@ -32,6 +33,18 @@ namespace ego_planner
     nh.param("fsm/emergency_time", emergency_time_, 1.0);
     nh.param("fsm/realworld_experiment", flag_realworld_experiment_, false);
     nh.param("fsm/fail_safe", enable_fail_safe_, true);
+    nh.param("require_execution_feedback", require_execution_feedback_, true);
+    nh.param("execution_feedback_timeout", execution_feedback_timeout_, 0.5);
+    nh.param("peer_trajectory_timeout", peer_trajectory_timeout_, 1.5);
+    nh.param("fsm/odometry_timeout", odometry_timeout_, 0.25);
+    nh.param("fsm/planning_handoff_budget", planning_handoff_budget_, 0.25);
+    nh.param("fsm/planning_entry_gap", planning_entry_gap_, 0.3);
+    if (!std::isfinite(execution_feedback_timeout_) || execution_feedback_timeout_ <= 0 ||
+        !std::isfinite(peer_trajectory_timeout_) || peer_trajectory_timeout_ <= 0 ||
+        !std::isfinite(odometry_timeout_) || odometry_timeout_ <= 0 ||
+        !std::isfinite(planning_handoff_budget_) || planning_handoff_budget_ <= 0 ||
+        !std::isfinite(planning_entry_gap_) || planning_entry_gap_ <= 0)
+      throw std::runtime_error("invalid execution feedback/handoff parameters");
     nh.param("formation/manual_split", manual_formation_split_, false);
     nh.param("formation/general_dynamic_topology_enabled",
              general_dynamic_topology_enabled_, false);
@@ -125,7 +138,21 @@ namespace ego_planner
     exec_timer_ = nh.createTimer(ros::Duration(0.01), &EGOReplanFSM::execFSMCallback, this);
     safety_timer_ = nh.createTimer(ros::Duration(0.05), &EGOReplanFSM::checkCollisionCallback, this);
 
-    odom_sub_ = nh.subscribe("odom_world", 1, &EGOReplanFSM::odometryCallback, this);
+    // Only the inbox is touched off-thread. Planner/trajectory state remains
+    // confined to the main callback thread, with one latest packet per peer.
+    ros::NodeHandle execution_nh(nh);
+    execution_nh.setCallbackQueue(&execution_queue_);
+    odom_sub_ = execution_nh.subscribe("odom_world", 1,
+                                     &EGOReplanFSM::receiveOdometry, this,
+                                     ros::TransportHints().tcpNoDelay());
+    execution_inbox_.resize(form_num_);
+    trajectory_inbox_.resize(form_num_);
+    execution_sub_ = execution_nh.subscribe("planning/execution_recv", 100,
+                                 &EGOReplanFSM::receiveExecution, this,
+                                 ros::TransportHints().tcpNoDelay());
+    execution_spinner_.reset(new ros::AsyncSpinner(1, &execution_queue_));
+    execution_spinner_->start();
+    execution_hold_pub_ = nh.advertise<std_msgs::Empty>("planning/hold", 1);
     mandatory_stop_sub_ = nh.subscribe("mandatory_stop", 1, &EGOReplanFSM::mandatoryStopCallback, this);
     if (distributed_enabled_)
     {
@@ -165,8 +192,8 @@ namespace ego_planner
 
     /* Use MINCO trajectory to minimize the message size in wireless communication */
     broadcast_ploytraj_pub_ = nh.advertise<traj_utils::MINCOTraj>("planning/broadcast_traj_send", 10);
-    broadcast_ploytraj_sub_ = nh.subscribe<traj_utils::MINCOTraj>("planning/broadcast_traj_recv", 100,
-                                                                  &EGOReplanFSM::RecvBroadcastMINCOTrajCallback,
+    broadcast_ploytraj_sub_ = execution_nh.subscribe<traj_utils::MINCOTraj>("planning/broadcast_traj_recv", 100,
+                                                                  &EGOReplanFSM::receivePeerTrajectory,
                                                                   this,
                                                                   ros::TransportHints().tcpNoDelay());
 
@@ -1045,6 +1072,315 @@ namespace ego_planner
     }
   }
 
+  bool EGOReplanFSM::freshOdometry() const
+  {
+    const auto now = ros::Time::now();
+    return have_odom_ && !odom_stamp_.isZero() && odom_stamp_ <= now + ros::Duration(0.05) &&
+           (now - odom_stamp_).toSec() <= odometry_timeout_ &&
+           odom_pos_.allFinite() && odom_vel_.allFinite();
+  }
+
+  bool EGOReplanFSM::executionFromOdometry() const
+  {
+    const auto& info = planner_manager_->traj_.local_traj;
+    if (execution_replan_required_ || info.traj.getPieceNum() == 0 || info.duration <= 0)
+      return true;
+    if (!own_execution_.seen()) return false; // Legacy initial publication.
+    return !executionFeedbackFresh(own_execution_, ros::Time::now().toSec(), execution_feedback_timeout_) ||
+           own_execution_.mode != ExecutionMode::RUNNING || own_execution_.require_replan ||
+           own_execution_.trajectory_id != info.traj_id ||
+           std::abs(own_execution_.trajectory_start_time - info.start_time) > 1e-4;
+  }
+
+  bool EGOReplanFSM::executorReady() const
+  {
+    return readiness_heartbeat_fresh_ && executionFeedbackFresh(
+        own_readiness_, ros::Time::now().toSec(), execution_feedback_timeout_) &&
+        (!own_execution_.seen() || executionFeedbackNewer(own_readiness_, own_execution_));
+  }
+
+  void EGOReplanFSM::requestExecutionHold()
+  {
+    const auto now = ros::Time::now();
+    if (last_hold_request_.isZero() || (now - last_hold_request_).toSec() >= 0.2)
+    {
+      execution_hold_pub_.publish(std_msgs::Empty());
+      last_hold_request_ = now;
+    }
+  }
+
+  bool EGOReplanFSM::enforceExecutionConsistency()
+  {
+    consumeExecution();
+    // A status packet must never release the navigation/startup barriers.
+    if (!have_target_ || !have_trigger_ || mandatory_stop_ ||
+        exec_state_ == INIT || exec_state_ == WAIT_TARGET ||
+        (distributed_enabled_ && !distributed_startup_ready_)) return false;
+    const auto now = ros::Time::now();
+    if (!freshOdometry())
+    {
+      requestExecutionHold();
+      execution_replan_required_ = true;
+      ROS_ERROR_THROTTLE(1.0, "[EXECUTION_SYNC] stale odometry; hold requested, no moving plan published");
+      return true;
+    }
+    if (require_execution_feedback_)
+    {
+      const auto& peers = planner_manager_->traj_.swarm_traj;
+      if (peer_execution_mismatch_since_.size() < peers.size())
+        peer_execution_mismatch_since_.resize(peers.size());
+      for (const auto& peer : peers)
+      {
+        if (peer.drone_id < 0 || peer.drone_id == planner_manager_->pp_.drone_id) continue;
+        if (static_cast<size_t>(peer.drone_id) >= peer_execution_mismatch_since_.size()) continue;
+        const bool missing = !peer.execution.seen() && peer.last_traj_receive_time > 0 &&
+            now.toSec() - peer.last_traj_receive_time > execution_feedback_timeout_;
+        const bool stale = peer.execution.seen() && !executionFeedbackFresh(
+            peer.execution, now.toSec(), execution_feedback_timeout_);
+        auto& mismatch_since = peer_execution_mismatch_since_[peer.drone_id];
+        const bool mismatch = peer.execution.seen() && !stale &&
+            peer.execution.mode == ExecutionMode::RUNNING && predictPeer(
+                peer, now.toSec(), now.toSec(), execution_feedback_timeout_,
+                peer_trajectory_timeout_).uncertain;
+        if (!mismatch) mismatch_since = ros::Time();
+        else if (mismatch_since.isZero()) mismatch_since = now;
+        const bool mismatch_expired = mismatch &&
+            (now - mismatch_since).toSec() > execution_feedback_timeout_;
+        if (missing || stale || mismatch_expired)
+        {
+          requestExecutionHold();
+          execution_replan_required_ = true;
+          ROS_ERROR_THROTTLE(1.0, "[EXECUTION_SYNC] drone=%d peer=%d missing=%d stale=%d mismatch=%d; hold instead of assuming continued motion",
+                             planner_manager_->pp_.drone_id, peer.drone_id,
+                             missing, stale, mismatch_expired);
+          return true;
+        }
+      }
+    }
+    const bool feedback_fresh = executionFeedbackFresh(
+        own_execution_, now.toSec(), execution_feedback_timeout_) &&
+        (!own_readiness_.seen() || own_execution_.session >= own_readiness_.session);
+    const bool ready = executorReady();
+    if (require_execution_feedback_ && last_plan_publish_stamp_.isZero() && !feedback_fresh && !ready)
+    {
+      requestExecutionHold();
+      ROS_INFO_THROTTLE(1.0, "[EXECUTION_SYNC] waiting for executor heartbeat/readiness handshake");
+      return true;
+    }
+    if (require_execution_feedback_ && !last_plan_publish_stamp_.isZero() &&
+        (now - last_plan_publish_stamp_).toSec() > execution_feedback_timeout_ && !feedback_fresh && !ready)
+    {
+      requestExecutionHold();
+      execution_replan_required_ = true;
+      ROS_ERROR_THROTTLE(1.0, "[EXECUTION_SYNC] execution status missing/stale; hold until feedback recovers");
+      return true;
+    }
+    const auto& info = planner_manager_->traj_.local_traj;
+    const bool confirmed = feedback_fresh && own_execution_.trajectory_id == info.traj_id &&
+        std::abs(own_execution_.trajectory_start_time - info.start_time) <= 1e-4;
+    if (require_execution_feedback_ && !last_plan_publish_stamp_.isZero() && !confirmed &&
+        (now - last_plan_publish_stamp_).toSec() <= execution_feedback_timeout_)
+      return true; // Await acknowledgement, not another plan from the same old HOLD.
+    if (require_execution_feedback_ && !last_plan_publish_stamp_.isZero() && !confirmed)
+    {
+      // A fresh status for an older ID means the server rejected or did not
+      // receive our replacement. Replan from odometry; never pretend it ran.
+      requestExecutionHold();
+      execution_replan_required_ = true;
+    }
+    if (execution_replan_required_ && collision_recovery_active_)
+    {
+      collision_recovery_active_ = false;
+      enable_fail_safe_ = fail_safe_before_collision_recovery_;
+    }
+    if (execution_replan_required_ && enable_fail_safe_ && exec_state_ != EMERGENCY_STOP)
+    {
+      if (exec_state_ != GEN_NEW_TRAJ)
+        changeFSMExecState(GEN_NEW_TRAJ, "EXECUTION_REPLAN_FROM_ODOMETRY");
+    }
+    return false;
+  }
+
+  void EGOReplanFSM::receiveExecution(const traj_utils::TrajectoryExecution::ConstPtr& msg)
+  {
+    const auto now = ros::Time::now();
+    if (msg->drone_id < 0 || msg->drone_id >= form_num_ ||
+        msg->session == 0 || msg->sequence == 0 || msg->header.stamp.isZero() ||
+        msg->header.frame_id != "world" || msg->header.stamp > now + ros::Duration(0.05) ||
+        (now - msg->header.stamp).toSec() > execution_feedback_timeout_) return;
+    std::lock_guard<std::mutex> lock(execution_inbox_mutex_);
+    auto& pending = execution_inbox_[msg->drone_id];
+    if (pending && (msg->session < pending->session ||
+        (msg->session == pending->session && msg->sequence <= pending->sequence))) return;
+    pending = msg;
+  }
+
+  void EGOReplanFSM::consumeExecution()
+  {
+    std::vector<traj_utils::TrajectoryExecution::ConstPtr> pending(form_num_);
+    std::vector<traj_utils::MINCOTraj::ConstPtr> trajectories(form_num_);
+    nav_msgs::Odometry::ConstPtr odometry;
+    {
+      std::lock_guard<std::mutex> lock(execution_inbox_mutex_);
+      pending.swap(execution_inbox_);
+      trajectories.swap(trajectory_inbox_);
+      odometry.swap(odometry_inbox_);
+    }
+    if (odometry) odometryCallback(odometry);
+    // Apply the latest polynomial before matching its execution acknowledgement.
+    for (const auto& msg : trajectories)
+      if (msg) RecvBroadcastMINCOTrajCallback(msg);
+    for (const auto& msg : pending)
+      if (msg) executionCallback(msg);
+  }
+
+  void EGOReplanFSM::receivePeerTrajectory(const traj_utils::MINCOTraj::ConstPtr& msg)
+  {
+    const auto now = ros::Time::now();
+    if (msg->drone_id < 0 || msg->drone_id >= form_num_ ||
+        msg->drone_id == planner_manager_->pp_.drone_id || msg->start_time.isZero() ||
+        msg->start_time > now + ros::Duration(0.05) ||
+        (now - msg->start_time).toSec() > peer_trajectory_timeout_ ||
+        msg->order != 5 || msg->duration.empty() || msg->traj_id <= 0 ||
+        msg->duration.size() != msg->inner_x.size() + 1 ||
+        msg->inner_y.size() != msg->inner_x.size() ||
+        msg->inner_z.size() != msg->inner_x.size()) return;
+    for (double duration : msg->duration)
+      if (!std::isfinite(duration) || duration <= 0.0) return;
+    for (const auto* axis : {&msg->inner_x, &msg->inner_y, &msg->inner_z})
+      for (double value : *axis)
+        if (!std::isfinite(value)) return;
+    for (int i = 0; i < 3; ++i)
+      if (!std::isfinite(msg->start_p[i]) || !std::isfinite(msg->start_v[i]) ||
+          !std::isfinite(msg->start_a[i]) || !std::isfinite(msg->end_p[i]) ||
+          !std::isfinite(msg->end_v[i]) || !std::isfinite(msg->end_a[i])) return;
+    std::lock_guard<std::mutex> lock(execution_inbox_mutex_);
+    auto& pending = trajectory_inbox_[msg->drone_id];
+    if (!pending || msg->start_time > pending->start_time) pending = msg;
+  }
+
+  void EGOReplanFSM::receiveOdometry(const nav_msgs::Odometry::ConstPtr& msg)
+  {
+    const auto now = ros::Time::now();
+    const auto& p = msg->pose.pose.position;
+    const auto& v = msg->twist.twist.linear;
+    if (msg->header.stamp.isZero() || msg->header.stamp > now + ros::Duration(0.05) ||
+        !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
+        !std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z)) return;
+    std::lock_guard<std::mutex> lock(execution_inbox_mutex_);
+    if (!odometry_inbox_ || msg->header.stamp >= odometry_inbox_->header.stamp)
+      odometry_inbox_ = msg;
+  }
+
+  void EGOReplanFSM::executionCallback(const traj_utils::TrajectoryExecution::ConstPtr& msg)
+  {
+    const auto now = ros::Time::now();
+    if (msg->drone_id < 0 || msg->drone_id >= form_num_ ||
+        msg->session == 0 || msg->sequence == 0 || msg->header.stamp.isZero() ||
+        msg->header.frame_id != "world" ||
+        msg->header.stamp > now + ros::Duration(0.05) ||
+        (now - msg->header.stamp).toSec() > execution_feedback_timeout_) return;
+    if (msg->mode == msg->WAITING)
+    {
+      // An idle/restarted server has no spatial command yet. Keep this
+      // handshake separate, so its zero vectors cannot create a ghost drone.
+      if (msg->trajectory_id != 0 || !msg->trajectory_start_time.isZero() || msg->trajectory_duration != 0 ||
+          msg->elapsed != 0 || msg->require_replan) return;
+      for (int j = 0; j < 3; ++j)
+        if (msg->position[j] != 0 || msg->velocity[j] != 0 || msg->acceleration[j] != 0) return;
+      ExecutionFeedback readiness;
+      readiness.session = msg->session; readiness.sequence = msg->sequence;
+      readiness.stamp = msg->header.stamp.toSec(); readiness.received_time = now.toSec();
+      if (msg->drone_id != planner_manager_->pp_.drone_id)
+      {
+        auto& peers = planner_manager_->traj_.swarm_traj;
+        if (peers.size() <= static_cast<size_t>(msg->drone_id)) return;
+        auto& previous = peers[msg->drone_id].execution;
+        if (!previous.seen() || readiness.session <= previous.session ||
+            !executionFeedbackNewer(readiness, previous)) return;
+        // Keep the last known spatial anchor, invalidate its old execution
+        // immediately. Readiness zero vectors must never replace that anchor.
+        previous.session = readiness.session; previous.sequence = readiness.sequence;
+        previous.stamp = 0.0;
+        previous.mode = ExecutionMode::HOLDING; previous.require_replan = true;
+        return;
+      }
+      if ((own_execution_.seen() && readiness.session <= own_execution_.session) ||
+          !executionFeedbackNewer(readiness, own_readiness_) ||
+          (own_execution_.seen() && !executionFeedbackNewer(readiness, own_execution_))) return;
+      const bool restarted = !last_plan_publish_stamp_.isZero() &&
+          readiness.session > own_readiness_.session &&
+          (!own_execution_.seen() || readiness.session > own_execution_.session);
+      own_readiness_ = readiness;
+      readiness_heartbeat_fresh_ = msg->heartbeat_fresh;
+      if (restarted)
+      {
+        execution_replan_required_ = true;
+        execution_hold_since_ = msg->header.stamp;
+      }
+      return;
+    }
+    if (msg->trajectory_id <= 0 ||
+        msg->trajectory_start_time.isZero() ||
+        !std::isfinite(msg->trajectory_duration) || msg->trajectory_duration <= 0 ||
+        !std::isfinite(msg->elapsed) || msg->elapsed < 0 ||
+        msg->elapsed > msg->trajectory_duration + 0.05 ||
+        msg->mode < msg->RUNNING || msg->mode > msg->FINISHED) return;
+    ExecutionFeedback feedback;
+    feedback.session = msg->session; feedback.sequence = msg->sequence;
+    feedback.trajectory_id = msg->trajectory_id;
+    feedback.trajectory_start_time = msg->trajectory_start_time.toSec();
+    feedback.duration = msg->trajectory_duration;
+    feedback.stamp = msg->header.stamp.toSec(); feedback.received_time = now.toSec();
+    feedback.mode = static_cast<ExecutionMode>(msg->mode);
+    feedback.require_replan = msg->require_replan;
+    for (int j = 0; j < 3; ++j)
+    {
+      feedback.position[j] = msg->position[j]; feedback.velocity[j] = msg->velocity[j];
+      feedback.acceleration[j] = msg->acceleration[j];
+    }
+    if (!feedback.position.allFinite() || !feedback.velocity.allFinite() ||
+        !feedback.acceleration.allFinite()) return;
+    if (msg->drone_id == planner_manager_->pp_.drone_id)
+    {
+      const auto& info = planner_manager_->traj_.local_traj;
+      const bool matches_current = info.traj_id > 0 && feedback.trajectory_id == info.traj_id &&
+          std::abs(feedback.trajectory_start_time - info.start_time) <= 1e-4 &&
+          std::abs(feedback.duration - info.duration) <= 1e-4;
+      const bool matches_previous = own_execution_.seen() &&
+          feedback.trajectory_id == own_execution_.trajectory_id &&
+          std::abs(feedback.trajectory_start_time - own_execution_.trajectory_start_time) <= 1e-4 &&
+          std::abs(feedback.duration - own_execution_.duration) <= 1e-4;
+      if (!matches_current && !matches_previous) return;
+      if (!executionFeedbackNewer(feedback, own_execution_)) return;
+      if (own_readiness_.seen() && !executionFeedbackNewer(feedback, own_readiness_)) return;
+      const bool entering_hold = feedback.require_replan &&
+          (own_execution_.session != feedback.session || !own_execution_.require_replan);
+      own_execution_ = feedback;
+      if (feedback.require_replan)
+      {
+        execution_replan_required_ = true;
+        if (entering_hold || execution_hold_since_.isZero()) execution_hold_since_ = msg->header.stamp;
+      }
+      if (feedback.mode == ExecutionMode::RUNNING && !feedback.require_replan &&
+          feedback.trajectory_id == info.traj_id &&
+          std::abs(feedback.trajectory_start_time - info.start_time) <= 1e-4)
+      {
+        execution_replan_required_ = false;
+        execution_hold_since_ = ros::Time();
+      }
+    }
+    else
+    {
+      auto& peers = planner_manager_->traj_.swarm_traj;
+      if (peers.size() <= static_cast<size_t>(msg->drone_id)) peers.resize(msg->drone_id + 1);
+      auto& peer = peers[msg->drone_id];
+      if (!executionFeedbackNewer(feedback, peer.execution)) return;
+      peer.drone_id = msg->drone_id;
+      peer.execution = feedback;
+    }
+  }
+
   void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
   {
     exec_timer_.stop(); // To avoid blockage
@@ -1090,6 +1426,8 @@ namespace ego_planner
       printFSMExecState();
     }
 
+    if (enforceExecutionConsistency()) goto force_return;
+
     switch (exec_state_)
     {
     case INIT:
@@ -1106,6 +1444,7 @@ namespace ego_planner
     {
       if (!have_target_ || !have_trigger_ || !initial_assignment_received_)
         goto force_return; // return;
+      if (!freshOdometry()) goto force_return;
       if (distributed_enabled_ && !distributed_startup_ready_)
       {
         const double elapsed = distributed_startup_begin_.isZero()
@@ -1281,6 +1620,10 @@ namespace ego_planner
       }
       else
       {
+        if ((mandatory_stop_ || !enable_fail_safe_) && executorReady() && freshOdometry() &&
+            (last_plan_publish_stamp_.isZero() ||
+             (now - last_plan_publish_stamp_).toSec() > execution_feedback_timeout_))
+          callEmergencyStop(odom_pos_); // Restarted executor: restore STOP only, not navigation.
         if (enable_fail_safe_ && odom_vel_.norm() < 0.1)
           changeFSMExecState(GEN_NEW_TRAJ, "FSM");
       }
@@ -1398,7 +1741,11 @@ namespace ego_planner
            << " goal_error=" << goal_error
            << " map_occ=" << map_occupancy
            << " wall_guard=" << static_cast<int>(wall_guard_violation)
-           << " target=" << static_cast<int>(have_target_);
+           << " target=" << static_cast<int>(have_target_)
+           << " execution_mode=" << (own_execution_.seen() ? static_cast<int>(own_execution_.mode) : 0)
+           << " execution_session=" << own_execution_.session
+           << " execution_sequence=" << own_execution_.sequence
+           << " execution_replan=" << execution_replan_required_;
     message.data = stream.str();
     safety_status_pub_.publish(message);
   }
@@ -1434,13 +1781,15 @@ namespace ego_planner
 
   void EGOReplanFSM::checkCollisionCallback(const ros::TimerEvent &e)
   {
+    const bool execution_blocked = enforceExecutionConsistency();
     // check ground height by the way
     double height;
     measureGroundHeight(height);
 
     LocalTrajData *info = &planner_manager_->traj_.local_traj;
     auto map = planner_manager_->grid_map_;
-    double t_cur = ros::Time::now().toSec() - info->start_time;
+    double t_cur = std::max(0.0, std::min(info->duration,
+        ros::Time::now().toSec() - info->start_time));
     PtsChk_t pts_chk = info->pts_chk;
 
     const int current_map_occupancy =
@@ -1448,6 +1797,12 @@ namespace ego_planner
     const bool current_wall_guard =
         have_odom_ && planner_manager_->violatesWallCollisionGuard(odom_pos_);
     publishSafetyStatus(current_map_occupancy, current_wall_guard, info, t_cur);
+    if (mandatory_stop_)
+    {
+      requestExecutionHold();
+      return; // No autonomous escape may override a user's mandatory stop.
+    }
+    if (execution_blocked) return;
 
     // This is a hard runtime invariant, independent of trajectory age and FSM
     // state.  It turns a silent wall-crossing/completion into an explicit,
@@ -1529,10 +1884,10 @@ namespace ego_planner
           peer.start_time < 1e9 || peer.duration <= 0.0)
         continue;
 
-      const double peer_time =
-          std::max(0.0, std::min(peer.duration, now - peer.start_time));
-      const Eigen::Vector3d peer_position = peer.traj.getPos(peer_time);
-      const Eigen::Vector3d peer_velocity = peer.traj.getVel(peer_time);
+      const auto prediction = predictPeer(peer, now, now, execution_feedback_timeout_, peer_trajectory_timeout_);
+      if (!prediction.valid || prediction.uncertain) continue;
+      const Eigen::Vector3d peer_position = prediction.position;
+      const Eigen::Vector3d peer_velocity = prediction.velocity;
       const double distance = (odom_pos_ - peer_position).norm();
       if (peer_velocity.norm() < 0.15 && distance < deadlock_distance &&
           distance < closest_peer_distance)
@@ -1739,10 +2094,15 @@ namespace ego_planner
             continue;
           }
 
-          double t_X = t - (info->start_time - planner_manager_->traj_.swarm_traj.at(id).start_time);
-          if (t_X > 0 && t_X < planner_manager_->traj_.swarm_traj.at(id).duration)
+          // Compare both aircraft at the same absolute instant. Held and
+          // finished peers remain present after their old polynomial expires.
+          const double absolute_time = info->start_time + t;
+          const auto prediction = predictPeer(planner_manager_->traj_.swarm_traj.at(id),
+              absolute_time, ros::Time::now().toSec(),
+              execution_feedback_timeout_, peer_trajectory_timeout_);
+          if (prediction.valid)
           {
-            Eigen::Vector3d swarm_pridicted = planner_manager_->traj_.swarm_traj.at(id).traj.getPos(t_X);
+            Eigen::Vector3d swarm_pridicted = prediction.position;
             double dist = (p - swarm_pridicted).norm();
 
             if (dist < CLEARANCE)
@@ -1759,38 +2119,31 @@ namespace ego_planner
 
         if (occ)
         {
-          /* Handle the collided case immediately */
-          if (planFromLocalTraj()) // Make a chance
+          const double collision_world_time = info->start_time + t;
+          const auto imminent = [&]() {
+            return collision_world_time - ros::Time::now().toSec() < emergency_time_;
+          };
+          if (imminent())
           {
-            ROS_INFO("[drone %d] Plan success after predicted collision (%s). ratio=%f",
-                     planner_manager_->pp_.drone_id,
-                     collision_reason.c_str(),
-                     t / info->duration);
-            changeFSMExecState(EXEC_TRAJ, "SAFETY");
+            ROS_WARN("[drone %d] Immediate execution hold: %s in %.3fs; do not block on replanning.",
+                     planner_manager_->pp_.drone_id, collision_reason.c_str(),
+                     collision_world_time - ros::Time::now().toSec());
+            // Send an executor hold before any expensive optimization. The
+            // installed stationary trajectory is also broadcast to peers.
+            requestExecutionHold();
+            if (freshOdometry()) callEmergencyStop(odom_pos_);
+            flag_escape_emergency_ = false;
+            changeFSMExecState(EMERGENCY_STOP, "SAFETY_COLLISION_NEAR");
             return;
           }
-          else
-          {
-            if (t - t_cur < emergency_time_) // 0.8s of emergency time
-            {
-              ROS_WARN("[drone %d] Emergency stop because %s is %.3fs ahead at p=(%.3f, %.3f, %.3f).",
-                       planner_manager_->pp_.drone_id,
-                       collision_reason.c_str(),
-                       t - t_cur,
-                       p.x(), p.y(), p.z());
-              changeFSMExecState(EMERGENCY_STOP, "SAFETY_COLLISION_NEAR");
-            }
-            else
-            {
-              ROS_WARN("[drone %d] Current trajectory predicts %s in %.3fs; replan.",
-                       planner_manager_->pp_.drone_id,
-                       collision_reason.c_str(),
-                       t - t_cur);
-              changeFSMExecState(REPLAN_TRAJ, "SAFETY");
-            }
-            return;
-          }
-          break;
+          // Safety callbacks must not run another optimizer on top of the
+          // FSM's planning cycle. Queue the work and yield so heartbeat and
+          // fresh-state handling are not starved by two planning paths.
+          ROS_WARN("[drone %d] Current trajectory predicts %s in %.3fs; queued FSM replan.",
+                   planner_manager_->pp_.drone_id, collision_reason.c_str(),
+                   collision_world_time - ros::Time::now().toSec());
+          changeFSMExecState(REPLAN_TRAJ, "SAFETY");
+          return;
         }
         previous_checked = p;
       }
@@ -1800,6 +2153,7 @@ namespace ego_planner
 
   bool EGOReplanFSM::callEmergencyStop(Eigen::Vector3d stop_pos)
   {
+    requestExecutionHold();
     if (!planner_manager_->EmergencyStop(stop_pos))
     {
       ROS_ERROR("[drone %d] Failed to install emergency-stop trajectory.",
@@ -1812,6 +2166,7 @@ namespace ego_planner
     polyTraj2ROSMsg(poly_msg, MINCO_msg);
     poly_traj_pub_.publish(poly_msg);
     broadcast_ploytraj_pub_.publish(MINCO_msg);
+    last_plan_publish_stamp_ = ros::Time::now();
 
     return true;
   }
@@ -1820,6 +2175,7 @@ namespace ego_planner
       const Eigen::Vector3d &start_pos,
       const Eigen::Vector3d &free_pos)
   {
+    if (mandatory_stop_) { requestExecutionHold(); return false; }
     if (!planner_manager_->EmergencyEscape(start_pos, free_pos))
     {
       ROS_ERROR("[drone %d] Failed to install collision-recovery trajectory.",
@@ -1832,11 +2188,18 @@ namespace ego_planner
     polyTraj2ROSMsg(poly_msg, MINCO_msg);
     poly_traj_pub_.publish(poly_msg);
     broadcast_ploytraj_pub_.publish(MINCO_msg);
+    last_plan_publish_stamp_ = ros::Time::now();
     return true;
   }
 
   bool EGOReplanFSM::callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj)
   {
+    if (mandatory_stop_) { requestExecutionHold(); return false; }
+    if (!freshOdometry()) { requestExecutionHold(); return false; }
+    const LocalTrajData previous = planner_manager_->traj_.local_traj;
+    const double previous_progress = planner_manager_->traj_.global_traj.glb_t_of_lc_tgt;
+    const double previous_last_progress = planner_manager_->traj_.global_traj.last_glb_t_of_lc_tgt;
+    const auto solve_started = ros::WallTime::now();
 
     planner_manager_->getLocalTarget(
         planning_horizen_, start_pt_, end_pt_,
@@ -1850,7 +2213,37 @@ namespace ego_planner
         (have_new_target_ || flag_use_poly_init),
         flag_randomPolyTraj, touch_goal_);
 
-    have_new_target_ = false;
+    consumeExecution(); // Validate the handoff against the freshest received state.
+    if (plan_success)
+    {
+      const auto now = ros::Time::now();
+      const auto& candidate = planner_manager_->traj_.local_traj;
+      const double age = now.toSec() - candidate.start_time;
+      const bool duration_valid = candidate.traj.getPieceNum() > 0 &&
+          std::isfinite(candidate.duration) && candidate.duration > 0;
+      Eigen::Vector3d handoff = duration_valid
+          ? candidate.traj.getPos(std::max(0.0, std::min(candidate.duration, age)))
+          : Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN());
+      const Eigen::Vector3d measured_now = odom_pos_ + odom_vel_ *
+          std::max(0.0, (now - odom_stamp_).toSec());
+      const bool feedback_current = !require_execution_feedback_ || executorReady() ||
+          (executionFeedbackFresh(own_execution_, now.toSec(), execution_feedback_timeout_) &&
+           (!own_readiness_.seen() || own_execution_.session >= own_readiness_.session));
+      plan_success = duration_valid && freshOdometry() && feedback_current && age >= -0.05 &&
+          age <= planning_handoff_budget_ &&
+          (ros::WallTime::now() - solve_started).toSec() <= planning_handoff_budget_ &&
+          (execution_hold_since_.isZero() || candidate.start_time > execution_hold_since_.toSec()) &&
+          handoff.allFinite() && (handoff - measured_now).norm() <= planning_entry_gap_;
+      if (!plan_success)
+        ROS_WARN_THROTTLE(1.0, "[EXECUTION_HANDOFF] reject stale/discontinuous candidate; keep published trajectory, replan from odometry");
+    }
+    if (!plan_success)
+    {
+      planner_manager_->traj_.local_traj = previous;
+      planner_manager_->traj_.global_traj.glb_t_of_lc_tgt = previous_progress;
+      planner_manager_->traj_.global_traj.last_glb_t_of_lc_tgt = previous_last_progress;
+    }
+    else have_new_target_ = false;
 
     ++planning_attempt_count_;
     if (plan_success)
@@ -1876,6 +2269,7 @@ namespace ego_planner
       polyTraj2ROSMsg(poly_msg, MINCO_msg);
       poly_traj_pub_.publish(poly_msg);
       broadcast_ploytraj_pub_.publish(MINCO_msg);
+      last_plan_publish_stamp_ = ros::Time::now();
     }
 
     return plan_success;
@@ -1883,6 +2277,8 @@ namespace ego_planner
 
   bool EGOReplanFSM::planFromGlobalTraj(const int trial_times /*=1*/) //zx-todo
   {
+    if (!freshOdometry()) { requestExecutionHold(); return false; }
+    const auto cycle_started = ros::WallTime::now();
 
     start_pt_ = odom_pos_;
     start_vel_ = odom_vel_;
@@ -1896,6 +2292,8 @@ namespace ego_planner
 
     for (int i = 0; i < trial_times; i++)
     {
+      if ((ros::WallTime::now() - cycle_started).toSec() >= planning_handoff_budget_)
+        break;
       if (callReboundReplan(true, flag_random_poly_init))
       {
         return true;
@@ -1906,9 +2304,13 @@ namespace ego_planner
 
   bool EGOReplanFSM::planFromLocalTraj(const int trial_times /*=1*/)
   {
+    if (!freshOdometry()) { requestExecutionHold(); return false; }
+    if (executionFromOdometry()) return planFromGlobalTraj(trial_times);
+    const auto cycle_started = ros::WallTime::now();
 
     LocalTrajData *info = &planner_manager_->traj_.local_traj;
-    double t_cur = ros::Time::now().toSec() - info->start_time;
+    double t_cur = std::max(0.0, std::min(info->duration,
+        ros::Time::now().toSec() - info->start_time));
 
     start_pt_ = info->traj.getPos(t_cur);
     start_vel_ = info->traj.getVel(t_cur);
@@ -1918,11 +2320,18 @@ namespace ego_planner
 
     if (!success)
     {
+      if ((ros::WallTime::now() - cycle_started).toSec() >= planning_handoff_budget_)
+        return false;
+      // Reinitialization after a failed handoff starts from actual odometry,
+      // not an extrapolated point on a possibly unexecuted trajectory.
+      start_pt_ = odom_pos_; start_vel_ = odom_vel_; start_acc_.setZero();
       success = callReboundReplan(true, false);
       if (!success)
       {
         for (int i = 0; i < trial_times; i++)
         {
+          if ((ros::WallTime::now() - cycle_started).toSec() >= planning_handoff_budget_)
+            break;
           success = callReboundReplan(true, true);
           if (success)
             break;
@@ -2131,6 +2540,9 @@ namespace ego_planner
 
   void EGOReplanFSM::mandatoryStopCallback(const std_msgs::Empty &msg)
   {
+    // Independent of odometry and polynomial acceptance: stop the executor
+    // even if a subsequently published stop trajectory cannot be accepted.
+    requestExecutionHold();
     mandatory_stop_ = true;
     ROS_ERROR("[drone %d] Received a mandatory stop command!",
               planner_manager_->pp_.drone_id);
@@ -2140,6 +2552,14 @@ namespace ego_planner
 
   void EGOReplanFSM::odometryCallback(const nav_msgs::OdometryConstPtr &msg)
   {
+    const auto now = ros::Time::now();
+    if (msg->header.stamp.isZero() || msg->header.stamp > now + ros::Duration(0.05) ||
+        (!odom_stamp_.isZero() && msg->header.stamp < odom_stamp_)) return;
+    const auto& p = msg->pose.pose.position;
+    const auto& v = msg->twist.twist.linear;
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
+        !std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z)) return;
+    odom_stamp_ = msg->header.stamp;
     odom_pos_(0) = msg->pose.pose.position.x;
     odom_pos_(1) = msg->pose.pose.position.y;
     odom_pos_(2) = msg->pose.pose.position.z;
@@ -2218,6 +2638,7 @@ namespace ego_planner
     planner_manager_->traj_.swarm_traj[recv_id].drone_id = recv_id;
     planner_manager_->traj_.swarm_traj[recv_id].traj_id = msg->traj_id;
     planner_manager_->traj_.swarm_traj[recv_id].start_time = msg->start_time.toSec();
+    planner_manager_->traj_.swarm_traj[recv_id].last_traj_receive_time = t_now.toSec();
 
     int piece_nums = msg->duration.size();
     Eigen::Matrix<double, 3, 3> headState, tailState;
@@ -2244,7 +2665,8 @@ namespace ego_planner
     planner_manager_->traj_.swarm_traj[recv_id].start_pos = trajectory.getPos(0.0);
 
     /* Check Collision */
-    if (planner_manager_->checkCollision(recv_id))
+    if (!mandatory_stop_ && have_target_ && have_trigger_ &&
+        exec_state_ != EMERGENCY_STOP && planner_manager_->checkCollision(recv_id))
     {
       changeFSMExecState(REPLAN_TRAJ, "SWARM_CHECK");
     }
