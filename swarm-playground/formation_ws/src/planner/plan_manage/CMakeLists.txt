@@ -75,7 +75,6 @@ target_link_libraries(ego_planner_node
 add_dependencies(ego_planner_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 add_executable(traj_server src/traj_server.cpp)
-add_dependencies(traj_server ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_executable(distributed_formation_visualizer src/distributed_formation_visualizer.cpp)
 add_dependencies(distributed_formation_visualizer ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(distributed_formation_visualizer ${catkin_LIBRARIES})
@@ -191,7 +190,7 @@ add_dependencies(formation_auto_split_bridge_8uav_node
   ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 if(CATKIN_ENABLE_TESTING)
-  catkin_add_gtest(test_execution_state test/test_execution_state.cpp)
+  catkin_add_gtest(test_trajectory_time test/test_trajectory_time.cpp)
   catkin_add_gtest(test_distributed_edges test/test_distributed_edges.cpp)
   catkin_add_gtest(test_distributed_assignment test/test_distributed_assignment.cpp)
   catkin_add_gtest(test_distributed_assignment_protocol

@@ -94,8 +94,6 @@
         <remap from="~planning/broadcast_traj_send" to="$(eval '/swarm/trajectories' if arg('distributed_enabled') else '/broadcast_traj_from_planner')"/>
         <remap from="~planning/broadcast_traj_recv" to="$(eval '/swarm/trajectories' if arg('distributed_enabled') else '/broadcast_traj_to_planner')"/>
         <remap from="~planning/heartbeat" to = "/drone_$(arg drone_id)_traj_server/heartbeat"/>
-        <remap from="~planning/execution_recv" to="/swarm/execution_state"/>
-        <remap from="~planning/hold" to="/drone_$(arg drone_id)_traj_server/hold"/>
         <remap from="~grid_map/odom" to="/drone_$(arg drone_id)_$(arg odometry_topic)"/>
         <remap from="~grid_map/cloud" to="/drone_$(arg drone_id)_$(arg cloud_topic)"/>
         <remap from="~grid_map/pose"   to = "/drone_$(arg drone_id)_$(arg camera_pose_topic)"/>

@@ -6,7 +6,6 @@
 #include <ros/ros.h>
 
 #include <optimizer/poly_traj_utils.hpp>
-#include <traj_utils/execution_state.hpp>
 
 using std::vector;
 
@@ -18,46 +17,33 @@ namespace ego_planner
   struct GlobalTrajData
   {
     poly_traj::Trajectory traj;
-    double global_start_time{0.0}; // world time
-    double duration{0.0};
+    double global_start_time; // world time
+    double duration;
 
     /* Global traj time. 
        The corresponding global trajectory time of the current local target.
        Used in local target selection process */
-    double glb_t_of_lc_tgt{0.0};
+    double glb_t_of_lc_tgt;
     /* Global traj time. 
        The corresponding global trajectory time of the last local target.
        Used in initial-path-from-last-optimal-trajectory generation process */
-    double last_glb_t_of_lc_tgt{-1.0};
+    double last_glb_t_of_lc_tgt;
   };
 
   struct LocalTrajData
   {
     poly_traj::Trajectory traj;
     PtsChk_t pts_chk;
-    int drone_id{-1}; // A negative value indicates no received trajectories.
-    int traj_id{0};
-    double duration{0.0};
-    double start_time{0.0}; // world time
-    double end_time{0.0};   // world time
-    Eigen::Vector3d start_pos{Eigen::Vector3d::Zero()};
-    double last_traj_receive_time{0.0};
-    ExecutionFeedback execution;
+    int drone_id; // A negative value indicates no received trajectories.
+    int traj_id;
+    double duration;
+    double start_time; // world time
+    double end_time;   // world time
+    Eigen::Vector3d start_pos;
 
   };
 
   typedef std::vector<LocalTrajData> SwarmTrajData;
-
-  inline PeerPrediction predictPeer(const LocalTrajData& peer,
-                                    double absolute_query, double reference_now,
-                                    double execution_ttl = 0.5,
-                                    double trajectory_ttl = 1.5)
-  {
-    return predictPeerTrajectory(peer.traj, peer.traj_id, peer.start_time,
-                                 peer.duration, peer.last_traj_receive_time,
-                                 peer.execution, absolute_query, reference_now,
-                                 execution_ttl, trajectory_ttl);
-  }
 
   class TrajContainer
   {
@@ -97,8 +83,6 @@ namespace ego_planner
       local_traj.duration = trajectory.getTotalDuration();
       local_traj.start_pos = trajectory.getJuncPos(0);
       local_traj.start_time = world_time;
-      local_traj.end_time = world_time + local_traj.duration;
-      local_traj.last_traj_receive_time = ros::Time::now().toSec();
       local_traj.traj = trajectory;
       local_traj.pts_chk = pts_to_chk;
     }

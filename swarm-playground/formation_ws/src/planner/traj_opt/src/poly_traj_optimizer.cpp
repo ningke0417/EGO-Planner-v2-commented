@@ -1,5 +1,4 @@
 #include "optimizer/poly_traj_optimizer.h"
-#include <stdexcept>
 // using namespace std;
 
 namespace ego_planner
@@ -10,14 +9,6 @@ namespace ego_planner
       const Eigen::MatrixXd &initInnerPts, const Eigen::VectorXd &initT,
       Eigen::MatrixXd &optimal_points, double &final_cost)
   {
-    peer_reference_time_ = ros::Time::now().toSec();
-    t_now_ = std::isfinite(planning_start_time_) && planning_start_time_ > 0.0
-                 ? planning_start_time_ : peer_reference_time_;
-    planning_start_time_ = -1.0; // A later independent call cannot inherit this anchor.
-    active_deadline_ = pending_deadline_.isZero()
-        ? ros::WallTime::now() + ros::WallDuration(planning_budget_) : pending_deadline_;
-    pending_deadline_ = ros::WallTime();
-    if (ros::WallTime::now() >= active_deadline_) return false;
     if (initInnerPts.cols() != (initT.size() - 1))
     {
       ROS_ERROR("initInnerPts.cols() != (initT.size()-1)");
@@ -73,6 +64,7 @@ namespace ego_planner
       force_stop_type_ = DONT_STOP;
       flag_still_occ = false;
       flag_success = false;
+      t_now_ = ros::Time::now().toSec();
 
       /* ---------- optimize ---------- */
       t1 = ros::Time::now();
@@ -87,11 +79,6 @@ namespace ego_planner
           &lbfgs_params);
 
       t2 = ros::Time::now();
-      if (ros::WallTime::now() >= active_deadline_)
-      {
-        ROS_WARN_THROTTLE(1.0, "[EXECUTION_BUDGET] optimization deadline reached; yield for fresh state");
-        return false;
-      }
       double time_ms = (t2 - t1).toSec() * 1000;
       double total_time_ms = (t2 - t0).toSec() * 1000;
 
@@ -1256,11 +1243,6 @@ namespace ego_planner
   {
     PolyTrajOptimizer *opt = reinterpret_cast<PolyTrajOptimizer *>(func_data);
 
-    if (!opt->active_deadline_.isZero() && ros::WallTime::now() >= opt->active_deadline_)
-    {
-      opt->force_stop_type_ = STOP_FOR_ERROR;
-      return 1;
-    }
     return (opt->force_stop_type_ == STOP_FOR_ERROR || opt->force_stop_type_ == STOP_FOR_REBOUND);
   }
 
@@ -1570,11 +1552,21 @@ namespace ego_planner
         continue;
       }
 
-      const PeerPrediction peer = predictPeer(swarm_trajs_->at(id), pt_time,
-          peer_reference_time_, execution_feedback_timeout_, peer_trajectory_timeout_);
-      if (!peer.valid) continue;
-      const Eigen::Vector3d& swarm_p = peer.position;
-      const Eigen::Vector3d& swarm_v = peer.velocity;
+      double traj_i_satrt_time = swarm_trajs_->at(id).start_time;
+
+      Eigen::Vector3d swarm_p, swarm_v;
+      if (pt_time < traj_i_satrt_time + swarm_trajs_->at(id).duration)
+      {
+        swarm_p = swarm_trajs_->at(id).traj.getPos(pt_time - traj_i_satrt_time);
+        swarm_v = swarm_trajs_->at(id).traj.getVel(pt_time - traj_i_satrt_time);
+      }
+      else
+      {
+        double exceed_time = pt_time - (traj_i_satrt_time + swarm_trajs_->at(id).duration);
+        swarm_v = swarm_trajs_->at(id).traj.getVel(swarm_trajs_->at(id).duration);
+        swarm_p = swarm_trajs_->at(id).traj.getPos(swarm_trajs_->at(id).duration) +
+                  exceed_time * swarm_v;
+      }
       Eigen::Vector3d dist_vec = p - swarm_p;
       double ellip_dist2 = dist_vec(2) * dist_vec(2) * inv_a2 + (dist_vec(0) * dist_vec(0) + dist_vec(1) * dist_vec(1)) * inv_b2;
       double dist2_err = CLEARANCE2 - ellip_dist2;
@@ -1662,11 +1654,21 @@ namespace ego_planner
             swarm_trajs_->at(id).drone_id != id)
           continue;
 
-        const PeerPrediction peer = predictPeer(swarm_trajs_->at(id), pt_time,
-            peer_reference_time_, execution_feedback_timeout_, peer_trajectory_timeout_);
-        if (!peer.valid) continue;
-        const Eigen::Vector3d& peer_position = peer.position;
-        const Eigen::Vector3d& peer_velocity = peer.velocity;
+        const double peer_start_time = swarm_trajs_->at(id).start_time;
+        Eigen::Vector3d peer_position, peer_velocity;
+        if (pt_time < peer_start_time + swarm_trajs_->at(id).duration)
+        {
+          peer_position = swarm_trajs_->at(id).traj.getPos(pt_time - peer_start_time);
+          peer_velocity = swarm_trajs_->at(id).traj.getVel(pt_time - peer_start_time);
+        }
+        else
+        {
+          const double exceed_time =
+              pt_time - (peer_start_time + swarm_trajs_->at(id).duration);
+          peer_velocity = swarm_trajs_->at(id).traj.getVel(swarm_trajs_->at(id).duration);
+          peer_position = swarm_trajs_->at(id).traj.getPos(swarm_trajs_->at(id).duration) +
+                          exceed_time * peer_velocity;
+        }
 
         const Eigen::Vector3d relative_offset =
             formation_.col(drone_id_) - formation_.col(id);
@@ -1711,11 +1713,25 @@ namespace ego_planner
               swarm_trajs_->at(id).drone_id != id)
             continue;
 
-          const PeerPrediction peer = predictPeer(swarm_trajs_->at(id), pt_time,
-              peer_reference_time_, execution_feedback_timeout_, peer_trajectory_timeout_);
-          if (!peer.valid) continue;
-          const Eigen::Vector3d& peer_position = peer.position;
-          const Eigen::Vector3d& peer_velocity = peer.velocity;
+          const double peer_start_time = swarm_trajs_->at(id).start_time;
+          Eigen::Vector3d peer_position, peer_velocity;
+          if (pt_time < peer_start_time + swarm_trajs_->at(id).duration)
+          {
+            peer_position =
+                swarm_trajs_->at(id).traj.getPos(pt_time - peer_start_time);
+            peer_velocity =
+                swarm_trajs_->at(id).traj.getVel(pt_time - peer_start_time);
+          }
+          else
+          {
+            const double exceed_time =
+                pt_time - (peer_start_time + swarm_trajs_->at(id).duration);
+            peer_velocity =
+                swarm_trajs_->at(id).traj.getVel(swarm_trajs_->at(id).duration);
+            peer_position =
+                swarm_trajs_->at(id).traj.getPos(swarm_trajs_->at(id).duration) +
+                exceed_time * peer_velocity;
+          }
 
           const double desired_progress_offset =
               formation_(0, drone_id_) - formation_(0, id);
@@ -1802,11 +1818,21 @@ namespace ego_planner
       if ((swarm_trajs_->at(id).drone_id < 0) || swarm_trajs_->at(id).drone_id == drone_id_)
         continue;
 
-      const PeerPrediction peer = predictPeer(swarm_trajs_->at(id), pt_time,
-          peer_reference_time_, execution_feedback_timeout_, peer_trajectory_timeout_);
-      if (!peer.valid) continue;
-      const Eigen::Vector3d& swarm_p = peer.position;
-      const Eigen::Vector3d& swarm_v = peer.velocity;
+      double traj_i_satrt_time = swarm_trajs_->at(id).start_time;
+
+      Eigen::Vector3d swarm_p, swarm_v;
+      if (pt_time < traj_i_satrt_time + swarm_trajs_->at(id).duration)
+      {
+        swarm_p = swarm_trajs_->at(id).traj.getPos(pt_time - traj_i_satrt_time);
+        swarm_v = swarm_trajs_->at(id).traj.getVel(pt_time - traj_i_satrt_time);
+      }
+      else
+      {
+        double exceed_time = pt_time - (traj_i_satrt_time + swarm_trajs_->at(id).duration);
+        swarm_v = swarm_trajs_->at(id).traj.getVel(swarm_trajs_->at(id).duration);
+        swarm_p = swarm_trajs_->at(id).traj.getPos(swarm_trajs_->at(id).duration) +
+                  exceed_time * swarm_v;
+      }
 
       l += (swarm_p - O).dot(a) - formation_(0, id);
       // cout << "swarm_p=" << swarm_p.transpose() << " O=" << O.transpose() << " a=" << a.transpose() << " id=" << id << " formation_(0, id)=" << formation_(0, id) << endl;
@@ -1964,13 +1990,6 @@ namespace ego_planner
   /* helper functions */
   void PolyTrajOptimizer::setParam(ros::NodeHandle &nh)
   {
-    nh.param("execution_feedback_timeout", execution_feedback_timeout_, 0.5);
-    nh.param("peer_trajectory_timeout", peer_trajectory_timeout_, 1.5);
-    nh.param("fsm/planning_handoff_budget", planning_budget_, 0.25);
-    if (!std::isfinite(execution_feedback_timeout_) || execution_feedback_timeout_ <= 0.0 ||
-        !std::isfinite(peer_trajectory_timeout_) || peer_trajectory_timeout_ <= 0.0 ||
-        !std::isfinite(planning_budget_) || planning_budget_ <= 0.0)
-      throw std::runtime_error("invalid peer execution/trajectory timeout");
     nh.param("optimization/constraint_points_perPiece", cps_num_prePiece_, -1);
     nh.param("optimization/weight_obstacle", wei_obs_, -1.0);
     nh.param("optimization/weight_obstacle_soft", wei_obs_soft_, -1.0);
