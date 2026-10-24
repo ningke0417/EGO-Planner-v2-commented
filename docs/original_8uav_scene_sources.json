@@ -1,0 +1,51 @@
+{
+  "official_commit": "9d85475ea7b9bf5c112cf7c3c3d0d3f9e96d9010",
+  "scene_source_commit": "cf208381002a5422db5cee2f320abb914cbd4ca9",
+  "source_worktree_has_uncommitted_changes": true,
+  "files": {
+    "swarm-playground/formation_ws/src/uav_simulator/map_generator/src/fixed_split_merge_wall_map.cpp": {
+      "sha256": "7ba16a3e098b958d5e9cc24b120d29bf17492d97f4130f48f1ba7f7b15dad4f1",
+      "copied_verbatim": true
+    },
+    "swarm-playground/formation_ws/src/uav_simulator/map_generator/src/sparse_random_obstacle_map.cpp": {
+      "sha256": "0d47a2153aa2cee4f65b8e9602cdce5bf72ea437ffdc223c0b46c2f28b5d48a0",
+      "copied_verbatim": true
+    },
+    "swarm-playground/formation_ws/src/uav_simulator/local_sensing/src/pointcloud_render_node.cpp": {
+      "sha256": "b527d5c63433c915e4042d70772c8f9516684aed6cd1100e606f7f8bf7549457",
+      "copied_verbatim": true
+    },
+    "swarm-playground/formation_ws/src/uav_simulator/fake_drone/src/poscmd_2_odom.cpp": {
+      "sha256": "0e1f4269c1cc324a8eeb43f700ea2f696fa47b172d4d832c4978b0f6bea51b17",
+      "copied_verbatim": true
+    },
+    "swarm-playground/formation_ws/src/planner/plan_manage/launch/rectangle_8uav_fixed_split_merge_wall.launch": {
+      "sha256": "ce057cfc34e6389dfcf78e504c07023a2fcaeb0e24f64827d823a62becc35ca2",
+      "copied_verbatim": false
+    },
+    "swarm-playground/formation_ws/src/planner/plan_manage/launch/rectangle_8uav_sparse_random.launch": {
+      "sha256": "e0a15dfee272785835a3087537ead7aac082f1e20d44c07e2831ae800e994a8d",
+      "copied_verbatim": false
+    },
+    "swarm-playground/formation_ws/src/planner/plan_manage/launch/rectangle_8uav_member.launch": {
+      "sha256": "9523eb59ab3d9e3fd277ea0161b18ed776afe5f8b462503fa174aa005cc16306",
+      "copied_verbatim": false
+    },
+    "swarm-playground/formation_ws/src/planner/plan_manage/launch/formation_6uav_dynamic_wall_member.launch": {
+      "sha256": "e0b227c50906b6d865cdd59a2cf8910f3d11f526605f7c5d94dbff23b2d8172d",
+      "copied_verbatim": false
+    },
+    "swarm-playground/formation_ws/src/planner/plan_manage/launch/run_in_sim.launch": {
+      "sha256": "6093f51b270fb5dd0348db147b280acb035f495c1266cbed790376848536e1f0",
+      "copied_verbatim": false
+    },
+    "swarm-playground/formation_ws/src/planner/plan_manage/launch/advanced_param.xml": {
+      "sha256": "1ea6a2a153cff78596d2efc0679acf929b99c8b616e140063e06dbe830162711",
+      "copied_verbatim": false
+    },
+    "swarm-playground/formation_ws/src/planner/plan_manage/launch/simulator.xml": {
+      "sha256": "0b3b5da8e032f8d1c907e6febf1c2ed4727040c762c136e5e17544b540d4e491",
+      "copied_verbatim": false
+    }
+  }
+}

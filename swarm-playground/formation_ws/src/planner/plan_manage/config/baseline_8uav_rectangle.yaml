@@ -1,0 +1,35 @@
+# Physical IDs and 1 m slot spacing match criterion-validation.
+formation:
+  num: 8
+  drone0:
+  - 0.5
+  - -1.5
+  - 0.0
+  drone1:
+  - 0.5
+  - -0.5
+  - 0.0
+  drone2:
+  - 0.5
+  - 0.5
+  - 0.0
+  drone3:
+  - 0.5
+  - 1.5
+  - 0.0
+  drone4:
+  - -0.5
+  - -1.5
+  - 0.0
+  drone5:
+  - -0.5
+  - -0.5
+  - 0.0
+  drone6:
+  - -0.5
+  - 0.5
+  - 0.0
+  drone7:
+  - -0.5
+  - 1.5
+  - 0.0

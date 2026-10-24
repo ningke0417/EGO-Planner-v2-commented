@@ -1,0 +1,300 @@
+{
+  "checked_at": "2026-10-22T23:36:27.606622+08:00",
+  "branch": "baseline/official-8uav-scenes",
+  "build": {
+    "result": "passed",
+    "command": "catkin_make --build build/original_baseline -DCATKIN_DEVEL_PREFIX=\"$PWD/devel/original_baseline\" -j2 -l2",
+    "source_overlay": "/opt/ros/noetic",
+    "fresh_build": true
+  },
+  "configuration_parity": {
+    "official_planner_files_unchanged": 63,
+    "cases": [
+      {
+        "case": "wall",
+        "environment_parameters_matched": 214,
+        "shared_planner_parameters_matched": 696,
+        "planner_nodes": 8
+      },
+      {
+        "case": "wall_custom",
+        "environment_parameters_matched": 214,
+        "shared_planner_parameters_matched": 696,
+        "planner_nodes": 8
+      },
+      {
+        "case": "random_seed17",
+        "environment_parameters_matched": 232,
+        "shared_planner_parameters_matched": 696,
+        "planner_nodes": 8
+      },
+      {
+        "case": "random_small42",
+        "environment_parameters_matched": 232,
+        "shared_planner_parameters_matched": 696,
+        "planner_nodes": 8
+      }
+    ]
+  },
+  "runtime_smoke": [
+    {
+      "scene": "wall",
+      "small_position_seed": -1,
+      "planning_seconds": 20.0,
+      "initial_positions": {
+        "0": [
+          -5.5,
+          -1.5,
+          1.5
+        ],
+        "1": [
+          -5.5,
+          -0.5,
+          1.5
+        ],
+        "2": [
+          -5.5,
+          0.5,
+          1.5
+        ],
+        "3": [
+          -5.5,
+          1.5,
+          1.5
+        ],
+        "4": [
+          -6.5,
+          -1.5,
+          1.5
+        ],
+        "5": [
+          -6.5,
+          -0.5,
+          1.5
+        ],
+        "6": [
+          -6.5,
+          0.5,
+          1.5
+        ],
+        "7": [
+          -6.5,
+          1.5,
+          1.5
+        ]
+      },
+      "map_points": 24000,
+      "map_data_sha256": "b4a4682872f5468285f3a0f98949a4bdb55d7d919d5edc074965c92b6e3ea53d",
+      "physical_boxes": 3,
+      "local_scans_received": 8,
+      "trajectory_counts": [
+        21,
+        18,
+        21,
+        19,
+        22,
+        25,
+        25,
+        19
+      ],
+      "nonfinite_trajectory_counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "displacements": [
+        7.184658358972768,
+        7.184113966529046,
+        7.190660549871016,
+        7.170775612224046,
+        7.183973786770579,
+        7.1499380930014445,
+        7.096359566097524,
+        7.189592468593216
+      ],
+      "nodes": [
+        "/baseline_smoke_probe",
+        "/drone_0_ego_planner_node",
+        "/drone_0_odom_visualization",
+        "/drone_0_pcl_render_node",
+        "/drone_0_poscmd_2_odom",
+        "/drone_0_traj_server",
+        "/drone_1_ego_planner_node",
+        "/drone_1_odom_visualization",
+        "/drone_1_pcl_render_node",
+        "/drone_1_poscmd_2_odom",
+        "/drone_1_traj_server",
+        "/drone_2_ego_planner_node",
+        "/drone_2_odom_visualization",
+        "/drone_2_pcl_render_node",
+        "/drone_2_poscmd_2_odom",
+        "/drone_2_traj_server",
+        "/drone_3_ego_planner_node",
+        "/drone_3_odom_visualization",
+        "/drone_3_pcl_render_node",
+        "/drone_3_poscmd_2_odom",
+        "/drone_3_traj_server",
+        "/drone_4_ego_planner_node",
+        "/drone_4_odom_visualization",
+        "/drone_4_pcl_render_node",
+        "/drone_4_poscmd_2_odom",
+        "/drone_4_traj_server",
+        "/drone_5_ego_planner_node",
+        "/drone_5_odom_visualization",
+        "/drone_5_pcl_render_node",
+        "/drone_5_poscmd_2_odom",
+        "/drone_5_traj_server",
+        "/drone_6_ego_planner_node",
+        "/drone_6_odom_visualization",
+        "/drone_6_pcl_render_node",
+        "/drone_6_poscmd_2_odom",
+        "/drone_6_traj_server",
+        "/drone_7_ego_planner_node",
+        "/drone_7_odom_visualization",
+        "/drone_7_pcl_render_node",
+        "/drone_7_poscmd_2_odom",
+        "/drone_7_traj_server",
+        "/drone_999_bridge_node",
+        "/fixed_split_merge_wall_map",
+        "/rosout",
+        "/traj2odom_node"
+      ],
+      "scope": "Startup and short planning/execution smoke check; not a mission success or safety result."
+    },
+    {
+      "scene": "random",
+      "small_position_seed": -1,
+      "planning_seconds": 20.0,
+      "initial_positions": {
+        "0": [
+          -13.5,
+          -1.5,
+          1.5
+        ],
+        "1": [
+          -13.5,
+          -0.5,
+          1.5
+        ],
+        "2": [
+          -13.5,
+          0.5,
+          1.5
+        ],
+        "3": [
+          -13.5,
+          1.5,
+          1.5
+        ],
+        "4": [
+          -14.5,
+          -1.5,
+          1.5
+        ],
+        "5": [
+          -14.5,
+          -0.5,
+          1.5
+        ],
+        "6": [
+          -14.5,
+          0.5,
+          1.5
+        ],
+        "7": [
+          -14.5,
+          1.5,
+          1.5
+        ]
+      },
+      "map_points": 102368,
+      "map_data_sha256": "13ffaa0d9e914676cc1ba77a7610fcbfecbd7c131f45d58e6dabea9161061360",
+      "physical_boxes": 15,
+      "local_scans_received": 8,
+      "trajectory_counts": [
+        22,
+        26,
+        26,
+        18,
+        24,
+        42,
+        27,
+        22
+      ],
+      "nonfinite_trajectory_counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "displacements": [
+        7.312994702210389,
+        7.184518233023427,
+        7.927721393978239,
+        7.551490756875194,
+        7.255913938014454,
+        7.131585519160085,
+        7.620200549011276,
+        7.3943025393506
+      ],
+      "nodes": [
+        "/baseline_smoke_probe",
+        "/drone_0_ego_planner_node",
+        "/drone_0_odom_visualization",
+        "/drone_0_pcl_render_node",
+        "/drone_0_poscmd_2_odom",
+        "/drone_0_traj_server",
+        "/drone_1_ego_planner_node",
+        "/drone_1_odom_visualization",
+        "/drone_1_pcl_render_node",
+        "/drone_1_poscmd_2_odom",
+        "/drone_1_traj_server",
+        "/drone_2_ego_planner_node",
+        "/drone_2_odom_visualization",
+        "/drone_2_pcl_render_node",
+        "/drone_2_poscmd_2_odom",
+        "/drone_2_traj_server",
+        "/drone_3_ego_planner_node",
+        "/drone_3_odom_visualization",
+        "/drone_3_pcl_render_node",
+        "/drone_3_poscmd_2_odom",
+        "/drone_3_traj_server",
+        "/drone_4_ego_planner_node",
+        "/drone_4_odom_visualization",
+        "/drone_4_pcl_render_node",
+        "/drone_4_poscmd_2_odom",
+        "/drone_4_traj_server",
+        "/drone_5_ego_planner_node",
+        "/drone_5_odom_visualization",
+        "/drone_5_pcl_render_node",
+        "/drone_5_poscmd_2_odom",
+        "/drone_5_traj_server",
+        "/drone_6_ego_planner_node",
+        "/drone_6_odom_visualization",
+        "/drone_6_pcl_render_node",
+        "/drone_6_poscmd_2_odom",
+        "/drone_6_traj_server",
+        "/drone_7_ego_planner_node",
+        "/drone_7_odom_visualization",
+        "/drone_7_pcl_render_node",
+        "/drone_7_poscmd_2_odom",
+        "/drone_7_traj_server",
+        "/drone_999_bridge_node",
+        "/rosout",
+        "/sparse_random_obstacle_map",
+        "/traj2odom_node"
+      ],
+      "scope": "Startup and short planning/execution smoke check; not a mission success or safety result."
+    }
+  ],
+  "reference_worktree_unchanged": true
+}

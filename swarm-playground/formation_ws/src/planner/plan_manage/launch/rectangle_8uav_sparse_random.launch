@@ -1,0 +1,80 @@
+<launch>
+    <arg name="rviz" default="true"/>
+    <arg name="random_seed" default="17"/>
+    <arg name="small_position_seed" default="-1" doc="-1: original layout; nonnegative: relocate only small obstacles, preserving their sizes"/>
+    <arg name="max_vel" default="0.5"/>
+    <arg name="map_size_x" default="32.0"/>
+    <arg name="map_size_y" default="14.0"/>
+    <arg name="map_size_z" default="3.0"/>
+    <arg name="start_x" default="-14.0"/>
+    <arg name="goal_x" default="14.0"/>
+    <arg name="large_obstacle_count" default="4"/>
+    <arg name="small_obstacle_count" default="6"/>
+    <arg name="endpoint_clearance" default="3.0"/>
+    <arg name="obstacle_separation" default="0.7"/>
+    <arg name="goal_side_obstacle_size_y" default="4.0"/>
+    <arg name="goal_side_obstacle_center_y" default="0.0"/>
+    <arg name="large_longitudinal_separation" default="3.5"/>
+    <arg name="small_center_y_limit" default="2.0"/>
+    <arg name="structured_challenge_enabled" default="true"/>
+    <arg name="stacked_cluster_x" default="-2.0"/>
+    <arg name="narrow_gap_x" default="4.8"/>
+    <arg name="narrow_gap_size_y" default="1.6"/>
+    <node pkg="map_generator" type="sparse_random_obstacle_map" name="sparse_random_obstacle_map" output="screen" required="true">
+        <remap from="global_cloud" to="/map_generator/global_cloud"/>
+        <param name="seed" value="$(arg random_seed)"/>
+        <param name="small_position_seed" value="$(arg small_position_seed)"/>
+        <param name="large_obstacle_count" value="$(arg large_obstacle_count)"/>
+        <param name="small_obstacle_count" value="$(arg small_obstacle_count)"/>
+        <param name="map_size_y" value="$(arg map_size_y)"/>
+        <param name="start_x" value="$(arg start_x)"/>
+        <param name="goal_x" value="$(arg goal_x)"/>
+        <param name="endpoint_clearance" value="$(arg endpoint_clearance)"/>
+        <param name="boundary_clearance" value="0.8"/>
+        <param name="obstacle_separation" value="$(arg obstacle_separation)"/>
+        <param name="large_longitudinal_separation" value="$(arg large_longitudinal_separation)"/>
+        <param name="small_center_y_limit" value="$(arg small_center_y_limit)"/>
+        <param name="structured_challenge_enabled" value="$(arg structured_challenge_enabled)"/>
+        <param name="stacked_cluster_x" value="$(arg stacked_cluster_x)"/>
+        <param name="stacked_cluster_y" value="-0.3"/>
+        <param name="stacked_block_size" value="1.2"/>
+        <param name="stacked_block_step" value="0.75"/>
+        <param name="narrow_gap_x" value="$(arg narrow_gap_x)"/>
+        <param name="narrow_gap_size_y" value="$(arg narrow_gap_size_y)"/>
+        <param name="narrow_gap_wall_size_x" value="0.8"/>
+        <param name="narrow_gap_segment_size_y" value="4.6"/>
+        <param name="large_size_x_min" value="0.6"/>
+        <param name="large_size_x_max" value="1.2"/>
+        <param name="large_size_y_min" value="2.5"/>
+        <param name="large_size_y_max" value="4.5"/>
+        <param name="goal_side_large_size_y_max" value="$(arg goal_side_obstacle_size_y)"/>
+        <param name="center_goal_side_large" value="true"/>
+        <param name="goal_side_large_center_y" value="$(arg goal_side_obstacle_center_y)"/>
+        <param name="small_size_min" value="0.45"/>
+        <param name="small_size_max" value="0.9"/>
+        <param name="resolution" value="0.1"/>
+        <param name="height" value="$(arg map_size_z)"/>
+    </node>
+    <arg name="safety_distance" default="0.2"/>
+    <arg name="formation_weight" default="200"/>
+    <arg name="start_planning" default="true"/>
+    <arg name="full_360_sensing" default="true"/>
+    <arg name="record_bag" default="false"/>
+    <arg name="bag_prefix" default="/tmp/ego_original_8uav_random"/>
+    <include file="$(find ego_planner)/launch/rectangle_8uav_fixed_split_merge_wall.launch">
+        <arg name="map_source" value="external"/>
+        <arg name="rviz" value="$(arg rviz)"/>
+        <arg name="max_vel" value="$(arg max_vel)"/>
+        <arg name="map_size_x" value="$(arg map_size_x)"/>
+        <arg name="map_size_y" value="$(arg map_size_y)"/>
+        <arg name="map_size_z" value="$(arg map_size_z)"/>
+        <arg name="start_x" value="$(arg start_x)"/>
+        <arg name="goal_x" value="$(arg goal_x)"/>
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
+        <arg name="formation_weight" value="$(arg formation_weight)"/>
+        <arg name="start_planning" value="$(arg start_planning)"/>
+        <arg name="full_360_sensing" value="$(arg full_360_sensing)"/>
+        <arg name="record_bag" value="$(arg record_bag)"/>
+        <arg name="bag_prefix" value="$(arg bag_prefix)"/>
+    </include>
+</launch>
