@@ -5,6 +5,7 @@
     <!-- Same seeded obstacle environment as formation_6uav_sparse_random. -->
     <arg name="rviz" default="true"/>
     <arg name="random_seed" default="17"/>
+    <arg name="small_position_seed" default="-1" doc="-1: original layout; nonnegative: relocate only small obstacles, preserving their sizes"/>
     <arg name="max_vel" default="0.5"/>
     <arg name="map_size_x" default="32.0"/>
     <arg name="map_size_y" default="14.0"/>
@@ -28,6 +29,7 @@
           name="sparse_random_obstacle_map" output="screen" required="true">
         <remap from="global_cloud" to="/map_generator/global_cloud"/>
         <param name="seed" value="$(arg random_seed)"/>
+        <param name="small_position_seed" value="$(arg small_position_seed)"/>
         <param name="large_obstacle_count" value="$(arg large_obstacle_count)"/>
         <param name="small_obstacle_count" value="$(arg small_obstacle_count)"/>
         <param name="map_size_y" value="$(arg map_size_y)"/>

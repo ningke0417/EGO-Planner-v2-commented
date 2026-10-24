@@ -49,6 +49,19 @@ roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch \
 # 不换槽对照：swap_enabled:=false
 ```
 
+只改变随机小块障碍物的位置时，保持 `random_seed` 和其他地图参数不变，
+单独修改 `small_position_seed`（非负整数）：
+
+```bash
+roslaunch ego_planner rectangle_8uav_sparse_random.launch \
+  coordination_mode:=distributed random_seed:=17 small_position_seed:=42
+```
+
+大型障碍、堆叠障碍和窄通道的位置、尺寸保持不变，小块障碍的尺寸也保持不变。
+相同的两个种子可复现相同地图；`small_position_seed:=-1`（默认值）恢复原始布局。
+该参数仅在启动时读取，切换布局需结束当前仿真后重新启动。
+首次使用此功能需在 `formation_ws` 编译 `catkin_make -j2 -l2` 并重新 source。
+
 以上场景分别运行。完整换槽使用各机局部地图认证的报价、轮换协调者和八机确认，
 没有固定中央分配节点；不是经典无协调者价格拍卖，也不保证物理轨迹原子切换。
 只在首次分裂后、所有成员距各自当前终点不超过 8 米时评估；进入 0.8 米以内的飞机
