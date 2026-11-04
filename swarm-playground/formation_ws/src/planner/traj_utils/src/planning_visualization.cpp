@@ -217,7 +217,7 @@ namespace ego_planner
 
   void PlanningVisualization::displayOptimalList(Eigen::MatrixXd optimal_pts, int id)
   {
-
+    return;  //临时隐藏红色小圆球轨迹
     if (optimal_list_pub.getNumSubscribers() == 0)
     {
       return;

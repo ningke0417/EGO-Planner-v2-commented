@@ -18,11 +18,11 @@
     <arg name="formation_weight" default="200"/>
     <arg name="initial_assignment_enabled" default="true"/>
 
-    <!-- These are identical to formation_6uav_criterion_auto_split_wall.launch. -->
+    <!-- Fixed-wall benchmark: first wall spans 8 m along y. -->
     <arg name="wall_x" default="-2.0"/>
     <arg name="wall_y" default="0.0"/>
     <arg name="wall_size_x" default="0.5"/>
-    <arg name="wall_size_y" default="4.0"/>
+    <arg name="wall_size_y" default="8.0"/>
     <arg name="second_wall_x" default="6.5"/>
     <arg name="second_wall_size_x" default="0.5"/>
     <arg name="second_wall_total_size_y" default="10.0"/>

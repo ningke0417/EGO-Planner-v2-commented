@@ -179,7 +179,7 @@
         <param name="optimization/constraint_points_perPiece" value="8" type="int"/>
         <param name="optimization/weight_obstacle" value="10000.0" type="double"/>
         <param name="optimization/weight_obstacle_soft" value="10000.0" type="double"/>
-        <param name="optimization/weight_swarm" value="10000.0" type="double"/>
+        <param name="optimization/weight_swarm" value="20000.0" type="double"/>
         <param name="optimization/weight_feasibility" value="10000.0" type="double"/>
         <param name="optimization/weight_sqrvariance" value="10000.0" type="double"/>
         <param name="optimization/weight_time" value="10.0" type="double"/>

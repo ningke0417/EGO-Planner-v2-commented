@@ -5,7 +5,7 @@
     <!-- Same seeded obstacle environment as formation_6uav_sparse_random. -->
     <arg name="rviz" default="true"/>
     <arg name="random_seed" default="17"/>
-    <arg name="small_position_seed" default="-1" doc="-1: original layout; nonnegative: relocate only small obstacles, preserving their sizes"/>
+    <arg name="small_position_seed" default="-1" doc="negative: original layout; nonnegative: independently resample small obstacle positions"/>
     <arg name="max_vel" default="0.5"/>
     <arg name="map_size_x" default="32.0"/>
     <arg name="map_size_y" default="14.0"/>
