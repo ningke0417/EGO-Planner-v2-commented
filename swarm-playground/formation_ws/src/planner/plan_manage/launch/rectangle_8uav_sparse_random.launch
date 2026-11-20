@@ -1,8 +1,8 @@
 <launch>
-    <arg name="coordination_mode" default="centralized"/>
+    <arg name="coordination_mode" default="distributed"/>
     <arg name="swap_enabled" default="true"/>
     <arg name="swap_scope" default="all"/>
-    <!-- Same seeded obstacle environment as formation_6uav_sparse_random. -->
+    <!-- Seeded sparse obstacles with the shared eight-UAV startup configuration. -->
     <arg name="rviz" default="true"/>
     <arg name="random_seed" default="17"/>
     <arg name="small_position_seed" default="-1" doc="negative: original layout; nonnegative: independently resample small obstacle positions"/>

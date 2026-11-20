@@ -1,5 +1,5 @@
 <launch>
-    <arg name="coordination_mode" default="centralized" doc="centralized or distributed"/>
+    <arg name="coordination_mode" default="distributed" doc="centralized or distributed"/>
     <arg name="swap_enabled" default="false"/>
     <arg name="swap_scope" default="all" doc="all: eight-agent reassignment; column: legacy front/rear swaps"/>
     <arg name="distributed_enabled" value="$(eval {'centralized': False, 'distributed': True}[arg('coordination_mode')])"/>
@@ -22,7 +22,7 @@
     <arg name="wall_x" default="-2.0"/>
     <arg name="wall_y" default="0.0"/>
     <arg name="wall_size_x" default="0.5"/>
-    <arg name="wall_size_y" default="8.0"/>
+    <arg name="wall_size_y" default="6.0"/>
     <arg name="second_wall_x" default="6.5"/>
     <arg name="second_wall_size_x" default="0.5"/>
     <arg name="second_wall_total_size_y" default="10.0"/>

@@ -22,7 +22,7 @@ roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch coordination_
 ```
 
 两个模式请分别启动、结束后再切换。随机地图入口
-`rectangle_8uav_sparse_random.launch` 也接受相同参数。未指定模式时保留集中式默认值。
+`rectangle_8uav_sparse_random.launch` 也接受相同参数。两个八机入口未指定模式时默认使用分布式。
 不要只依赖 Git 分支名判断运行模式。
 几何修订涉及 `plan_env`、`ego_planner` 和共享几何头；八机换槽又增加
 `FormationAssignment` 并扩展状态、证据、拓扑及回执消息。因此更新后需完整执行
@@ -37,11 +37,13 @@ roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch coordination_
   计算空间交叠，逐格检查端点间中心线。不重复膨胀、不额外叠加 0.1 米检测带。
   未知空间不能作为连接或重连证据。
 - 断边后记录两端最大距离。只有距离曾超过断开阈值至少 0.2 米、从峰值回落至少
-  0.25 米并连续靠近 0.6 秒，两端又各自在 3 米内确认已知空闲连线，
+  0.25 米并连续靠近 0.6 秒，两端又各自在 4 米内确认已知空闲连线，
   才允许持续 0.3 秒后以 0.22 权重建立弱连接。这样向墙两侧继续分流时不会在
-  1.8–3.0 米之间重新接边。进入 1.7 米以内并稳定 0.2 秒后转入正常连接；
+  1.8–4.0 米之间重新接边。进入 1.7 米以内并稳定 0.2 秒后转入正常连接；
   普通近距离重连仍保留 0.8 秒去抖。这两个时间分别由
   `weak_to_normal_hold` 和 `reconnect_hold` 控制，互不影响。
+  当前八机成员模板设置 `weak_reconnect_distance=4.0`；未设置该参数时，
+  agent 的 C++ 回退默认值仍为 3.0 米。后文历史验证记录使用各次实验当时的参数。
   重连不以 StarConvex 重叠度作为门槛；重叠度恢复后继续用于正常连接的分裂判断。
 - `FormationEdgeEvidence` 按端点发布；两端 KEEP 且证据未过期才启用一条边。
   任一端 CUT 或超时，接收节点就移除该边。异步消息传播期间可能短暂不一致，

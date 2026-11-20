@@ -32,16 +32,6 @@ target_link_libraries(random_forest
   ${catkin_LIBRARIES}
   ${PCL_LIBRARIES})
 
-add_executable(fixed_pillar_map src/fixed_pillar_map.cpp)
-target_link_libraries(fixed_pillar_map
-  ${catkin_LIBRARIES}
-  ${PCL_LIBRARIES})
-
-add_executable(fixed_wall_map src/fixed_wall_map.cpp)
-target_link_libraries(fixed_wall_map
-  ${catkin_LIBRARIES}
-  ${PCL_LIBRARIES})
-
 add_executable(fixed_split_merge_wall_map src/fixed_split_merge_wall_map.cpp)
 target_link_libraries(fixed_split_merge_wall_map
   ${catkin_LIBRARIES}

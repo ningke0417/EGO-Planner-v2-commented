@@ -73,7 +73,7 @@
         <node pkg="ego_planner" type="distributed_formation_agent"
               name="drone_$(arg drone_id)_formation_agent" output="log">
             <param name="drone_id" value="$(arg drone_id)"/>
-            <param name="weak_reconnect_distance" value="3.0"/>
+            <param name="weak_reconnect_distance" value="4.0"/>
             <param name="weak_reconnect_hold" value="0.3"/>
             <param name="weak_formation_scale" value="0.22"/>
             <param name="swap_enabled" value="$(arg swap_enabled)"/>

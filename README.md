@@ -9,27 +9,22 @@ This work was born out of [MINCO](https://github.com/ZJU-FAST-Lab/GCOPTER).
 If you find it interesting, please give both repos stars generously. Thanks.
 
 <img src="images/cover.jpg" alt="drawing" width="400"/>
-roslaunch ego_planner formation_4uav_criterion_no_split_wall.launch rviz:=true 
-cd /home/robot/Codes/EGO-Planner-criterion-validation/swarm-playground/formation_ws
-source devel/setup.zsh
-roslaunch ego_planner formation_4uav_criterion_auto_split_wall.launch rviz:=true
-cd /home/robot/Codes/EGO-Planner-criterion-validation/swarm-playground/formation_ws
-source devel/setup.zsh
-roslaunch ego_planner formation_6uav_no_split_wall.launch rviz:=true
-cd /home/robot/Codes/EGO-Planner-criterion-validation
+
+从仓库根目录加载 ROS 和编队工作空间环境后，分别运行下面的八机场景：
+
+```zsh
 source /opt/ros/noetic/setup.zsh
 source swarm-playground/formation_ws/devel/setup.zsh
+```
 
-roslaunch ego_planner formation_6uav_criterion_auto_split_wall.launch
-
-cd /home/robot/Codes/EGO-Planner-criterion-validation/swarm-playground/formation_ws
-source devel/setup.zsh
-roslaunch ego_planner formation_6uav_sparse_random.launch
+旧四机、六机实验入口已退出；官方原始编队入口 `formation.launch` 保留。
 
 # 8-UAV 2x4 formation (1 m spacing)
-分布式开发版（默认仍为集中式，可显式切换）：
+固定墙和随机障碍物入口默认使用分布式模式，集中式对照仍可显式选择：
 ```bash
-roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch coordination_mode:=distributed
+roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch
+roslaunch ego_planner rectangle_8uav_sparse_random.launch
+# 集中式对照，结束当前场景后再单独启动。
 roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch coordination_mode:=centralized
 ```
 编译、通信协议、测试和当前限制见 [分布式编队说明](docs/distributed-formation.md)。
@@ -71,7 +66,7 @@ roslaunch ego_planner rectangle_8uav_sparse_random.launch \
 
 固定墙环境：
 roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch
-第一堵墙当前默认长 8 m；批量轻量化录包、成功率和全员到达计时见 [录包说明](docs/bag-experiments.md)。
+第一堵墙当前默认长 6 m；可用 `wall_size_y:=8.0` 指定 8 m。批量轻量化录包、成功率和全员到达计时见 [录包说明](docs/bag-experiments.md)。
 随机障碍环境：
 roslaunch ego_planner rectangle_8uav_sparse_random.launch
 
@@ -180,102 +175,3 @@ rosnode kill /drone_1_formation_agent
 rosnode kill /drone_1_traj_server
 不再规划，traj_server 检测心跳丢失并保持最后位置：
 rosnode kill /drone_1_ego_planner_node
-
-任务4后台对比实验：第一堵墙9m，ours、Zhou、Quan各50轮，共150轮。
-全部150次完成且逐包SHA256核验通过后，顺序控制器自动启动任务5。
-[独立实验说明](docs/comparison-task04.md) ·
-[调度状态](bags/comparison_task04_wall09m_50each_20261028_003704_schedule.json) ·
-[当前轮次](bags/comparison_task04_wall09m_50each_20261028_003704/status.json) ·
-[独立汇总报告](bags/comparison_task04_wall09m_50each_20261028_003704/REPORT.md) ·
-[全部单轮指标与文件路径](bags/comparison_task04_wall09m_50each_20261028_003704/all_trial_metrics.csv)
-
-任务5后台对比实验：第一堵墙10m，ours、Zhou、Quan各50轮，共150轮。
-等待任务4全部完成并通过完整性检查后自动开始；本任务完成汇总后整个队列停止。
-[独立实验说明](docs/comparison-task05.md) ·
-[调度状态](bags/comparison_task05_wall10m_50each_20261028_003704_schedule.json) ·
-[当前轮次](bags/comparison_task05_wall10m_50each_20261028_003704/status.json) ·
-[独立汇总报告](bags/comparison_task05_wall10m_50each_20261028_003704/REPORT.md) ·
-[全部单轮指标与文件路径](bags/comparison_task05_wall10m_50each_20261028_003704/all_trial_metrics.csv)
-
-任务6后台对比实验：随机障碍map17、8个小块、位置种子1，ours（八机分布式并开启换槽）、Zhou、Quan各20次，共60个bag。
-沿用统一指标口径，三项目真实地图已预检一致；仅执行任务6，完成后自动停止。
-[实验说明](docs/comparison-task06.md) ·
-[当前进度](bags/comparison_task06_random_map17_small08_pos01_20each_20261028_205227/status.json) ·
-[独立汇总报告](bags/comparison_task06_random_map17_small08_pos01_20each_20261028_205227/REPORT.md) ·
-[各轮指标与文件路径](bags/comparison_task06_random_map17_small08_pos01_20each_20261028_205227/all_trial_metrics.csv)
-
-任务7后台对比实验：随机障碍map17、8个小块、位置种子2，ours（分布式并开启换槽）、Zhou、Quan各20轮，共60轮。
-本任务为当前队列首项，先核验地图后开始录制。本任务完成并校验后自动启动下一项。
-[独立实验说明](docs/comparison-task07.md) ·
-[调度状态](bags/comparison_task07_random_map17_small08_pos02_20each_20261028_223450_schedule.json) ·
-[当前轮次](bags/comparison_task07_random_map17_small08_pos02_20each_20261028_223450/status.json) ·
-[独立汇总报告](bags/comparison_task07_random_map17_small08_pos02_20each_20261028_223450/REPORT.md) ·
-[单轮指标与文件路径](bags/comparison_task07_random_map17_small08_pos02_20each_20261028_223450/all_trial_metrics.csv)
-
-任务8后台对比实验：随机障碍map17、8个小块、位置种子3，ours（分布式并开启换槽）、Zhou、Quan各20轮，共60轮。
-任务7全部完成并通过记录完整性检查后自动启动本任务。本任务完成并校验后自动启动下一项。
-[独立实验说明](docs/comparison-task08.md) ·
-[调度状态](bags/comparison_task08_random_map17_small08_pos03_20each_20261028_223450_schedule.json) ·
-[当前轮次](bags/comparison_task08_random_map17_small08_pos03_20each_20261028_223450/status.json) ·
-[独立汇总报告](bags/comparison_task08_random_map17_small08_pos03_20each_20261028_223450/REPORT.md) ·
-[单轮指标与文件路径](bags/comparison_task08_random_map17_small08_pos03_20each_20261028_223450/all_trial_metrics.csv)
-
-任务9后台对比实验：随机障碍map17、8个小块、位置种子4，ours（分布式并开启换槽）、Zhou、Quan各20轮，共60轮。
-任务8全部完成并通过记录完整性检查后自动启动本任务。本任务完成并校验后自动启动下一项。
-[独立实验说明](docs/comparison-task09.md) ·
-[调度状态](bags/comparison_task09_random_map17_small08_pos04_20each_20261028_223450_schedule.json) ·
-[当前轮次](bags/comparison_task09_random_map17_small08_pos04_20each_20261028_223450/status.json) ·
-[独立汇总报告](bags/comparison_task09_random_map17_small08_pos04_20each_20261028_223450/REPORT.md) ·
-[单轮指标与文件路径](bags/comparison_task09_random_map17_small08_pos04_20each_20261028_223450/all_trial_metrics.csv)
-
-任务10后台对比实验：随机障碍map17、8个小块、位置种子5，ours（分布式并开启换槽）、Zhou、Quan各20轮，共60轮。
-任务9全部完成并通过记录完整性检查后自动启动本任务。本任务完成并校验后自动启动下一项。
-[独立实验说明](docs/comparison-task10.md) ·
-[调度状态](bags/comparison_task10_random_map17_small08_pos05_20each_20261028_223450_schedule.json) ·
-[当前轮次](bags/comparison_task10_random_map17_small08_pos05_20each_20261028_223450/status.json) ·
-[独立汇总报告](bags/comparison_task10_random_map17_small08_pos05_20each_20261028_223450/REPORT.md) ·
-[单轮指标与文件路径](bags/comparison_task10_random_map17_small08_pos05_20each_20261028_223450/all_trial_metrics.csv)
-
-任务11后台对比实验：随机障碍map17、8个小块、位置种子6，ours（分布式并开启换槽）、Zhou、Quan各20轮，共60轮。
-任务10全部完成并通过记录完整性检查后自动启动本任务。本任务完成并校验后自动启动下一项。
-[独立实验说明](docs/comparison-task11.md) ·
-[调度状态](bags/comparison_task11_random_map17_small08_pos06_20each_20261028_223450_schedule.json) ·
-[当前轮次](bags/comparison_task11_random_map17_small08_pos06_20each_20261028_223450/status.json) ·
-[独立汇总报告](bags/comparison_task11_random_map17_small08_pos06_20each_20261028_223450/REPORT.md) ·
-[单轮指标与文件路径](bags/comparison_task11_random_map17_small08_pos06_20each_20261028_223450/all_trial_metrics.csv)
-
-任务12后台对比实验：随机障碍map17、8个小块、位置种子7，ours（分布式并开启换槽）、Zhou、Quan各20轮，共60轮。
-任务11全部完成并通过记录完整性检查后自动启动本任务。本任务完成并校验后自动启动下一项。
-[独立实验说明](docs/comparison-task12.md) ·
-[调度状态](bags/comparison_task12_random_map17_small08_pos07_20each_20261028_223450_schedule.json) ·
-[当前轮次](bags/comparison_task12_random_map17_small08_pos07_20each_20261028_223450/status.json) ·
-[独立汇总报告](bags/comparison_task12_random_map17_small08_pos07_20each_20261028_223450/REPORT.md) ·
-[单轮指标与文件路径](bags/comparison_task12_random_map17_small08_pos07_20each_20261028_223450/all_trial_metrics.csv)
-
-任务13后台对比实验：随机障碍map17、8个小块、位置种子8，ours（分布式并开启换槽）、Zhou、Quan各20轮，共60轮。
-任务12全部完成并通过记录完整性检查后自动启动本任务。本任务完成并校验后自动启动下一项。
-[独立实验说明](docs/comparison-task13.md) ·
-[调度状态](bags/comparison_task13_random_map17_small08_pos08_20each_20261028_223450_schedule.json) ·
-[当前轮次](bags/comparison_task13_random_map17_small08_pos08_20each_20261028_223450/status.json) ·
-[独立汇总报告](bags/comparison_task13_random_map17_small08_pos08_20each_20261028_223450/REPORT.md) ·
-[单轮指标与文件路径](bags/comparison_task13_random_map17_small08_pos08_20each_20261028_223450/all_trial_metrics.csv)
-
-任务14后台对比实验：随机障碍map17、8个小块、位置种子9，ours（分布式并开启换槽）、Zhou、Quan各20轮，共60轮。
-任务13全部完成并通过记录完整性检查后自动启动本任务。本任务完成并校验后自动启动下一项。
-[独立实验说明](docs/comparison-task14.md) ·
-[调度状态](bags/comparison_task14_random_map17_small08_pos09_20each_20261028_223450_schedule.json) ·
-[当前轮次](bags/comparison_task14_random_map17_small08_pos09_20each_20261028_223450/status.json) ·
-[独立汇总报告](bags/comparison_task14_random_map17_small08_pos09_20each_20261028_223450/REPORT.md) ·
-[单轮指标与文件路径](bags/comparison_task14_random_map17_small08_pos09_20each_20261028_223450/all_trial_metrics.csv)
-
-任务15后台对比实验：随机障碍map17、8个小块、位置种子10，ours（分布式并开启换槽）、Zhou、Quan各20轮，共60轮。
-任务14全部完成并通过记录完整性检查后自动启动本任务。本任务完成汇总并校验后，整个队列自动停止。
-[独立实验说明](docs/comparison-task15.md) ·
-[调度状态](bags/comparison_task15_random_map17_small08_pos10_20each_20261028_223450_schedule.json) ·
-[当前轮次](bags/comparison_task15_random_map17_small08_pos10_20each_20261028_223450/status.json) ·
-[独立汇总报告](bags/comparison_task15_random_map17_small08_pos10_20each_20261028_223450/REPORT.md) ·
-[单轮指标与文件路径](bags/comparison_task15_random_map17_small08_pos10_20each_20261028_223450/all_trial_metrics.csv)
-
-任务14–15已设置续录（2026-10-29T14:03:12.960647+08:00）：保留430次有效记录；任务14补50次后顺序运行任务15的60次。
-任务14未通过里程计审计的尝试完整归档，门槛不变；两项说明与报告仍独立保存。
-全部完成后自动生成[任务6–15完整平均报告](bags/comparison_tasks06_to15_average_final/REPORT.md)，然后停止。

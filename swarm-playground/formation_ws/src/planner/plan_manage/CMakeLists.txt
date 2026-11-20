@@ -85,31 +85,10 @@ target_link_libraries(distributed_formation_agent
 target_link_libraries(traj_server ${catkin_LIBRARIES})
 # add_dependencies(traj_server ${${PROJECT_NAME}_EXPORTED_TARGETS})
 
-add_executable(starconvex_shadow_4uav_node src/starconvex_shadow_4uav_node.cpp)
-target_link_libraries(starconvex_shadow_4uav_node
-  ${STARCONVEX_ROOT}/devel/lib/libstar_cvx.a
-  ${catkin_LIBRARIES}
-  ${PCL_LIBRARIES}
-)
-
-add_executable(starconvex_shadow_6uav_node src/starconvex_shadow_6uav_node.cpp)
-target_link_libraries(starconvex_shadow_6uav_node
-  ${STARCONVEX_ROOT}/devel/lib/libstar_cvx.a
-  ${catkin_LIBRARIES}
-  ${PCL_LIBRARIES}
-)
-
 add_executable(starconvex_shadow_8uav_node src/starconvex_shadow_6uav_node.cpp)
 target_compile_definitions(starconvex_shadow_8uav_node PRIVATE FORMATION_UAV_COUNT=8)
 target_link_libraries(starconvex_shadow_8uav_node
   ${STARCONVEX_ROOT}/devel/lib/libstar_cvx.a
-  ${catkin_LIBRARIES}
-  ${PCL_LIBRARIES}
-)
-
-add_executable(swarm_observed_map_6uav_node
-  src/swarm_observed_map_6uav_node.cpp)
-target_link_libraries(swarm_observed_map_6uav_node
   ${catkin_LIBRARIES}
   ${PCL_LIBRARIES}
 )
@@ -122,46 +101,12 @@ target_link_libraries(swarm_observed_map_8uav_node
   ${PCL_LIBRARIES}
 )
 
-add_executable(formation_backend_visualizer_4uav_node
-  src/formation_backend_visualizer_4uav_node.cpp)
-target_link_libraries(formation_backend_visualizer_4uav_node
-  ${catkin_LIBRARIES}
-)
-
-add_executable(formation_backend_visualizer_6uav_node
-  src/formation_backend_visualizer_6uav_node.cpp)
-target_link_libraries(formation_backend_visualizer_6uav_node
-  ${catkin_LIBRARIES}
-)
-
 add_executable(formation_backend_visualizer_8uav_node
   src/formation_backend_visualizer_6uav_node.cpp)
 target_compile_definitions(formation_backend_visualizer_8uav_node PRIVATE FORMATION_UAV_COUNT=8)
 target_link_libraries(formation_backend_visualizer_8uav_node
   ${catkin_LIBRARIES}
 )
-
-add_executable(formation_auto_split_bridge_4uav_node
-  src/formation_auto_split_bridge_4uav_node.cpp)
-target_link_libraries(formation_auto_split_bridge_4uav_node
-  ${catkin_LIBRARIES}
-)
-add_dependencies(formation_auto_split_bridge_4uav_node
-  ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-
-add_executable(initial_formation_assignment_4uav_node
-  src/initial_formation_assignment_4uav_node.cpp)
-target_link_libraries(initial_formation_assignment_4uav_node
-  ${catkin_LIBRARIES}
-)
-
-add_executable(initial_formation_assignment_6uav_node
-  src/initial_formation_assignment_6uav_node.cpp)
-target_link_libraries(initial_formation_assignment_6uav_node
-  ${catkin_LIBRARIES}
-)
-add_dependencies(initial_formation_assignment_6uav_node
-  ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 add_executable(initial_formation_assignment_8uav_node
   src/initial_formation_assignment_6uav_node.cpp)
@@ -170,14 +115,6 @@ target_link_libraries(initial_formation_assignment_8uav_node
   ${catkin_LIBRARIES}
 )
 add_dependencies(initial_formation_assignment_8uav_node
-  ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-
-add_executable(formation_auto_split_bridge_6uav_node
-  src/formation_auto_split_bridge_6uav_node.cpp)
-target_link_libraries(formation_auto_split_bridge_6uav_node
-  ${catkin_LIBRARIES}
-)
-add_dependencies(formation_auto_split_bridge_6uav_node
   ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 add_executable(formation_auto_split_bridge_8uav_node
@@ -215,25 +152,6 @@ if(CATKIN_ENABLE_TESTING)
     )
   endif()
 endif()
-
-add_executable(subgroup_route_intent_4uav_node
-  src/subgroup_route_intent_4uav_node.cpp)
-target_link_libraries(subgroup_route_intent_4uav_node
-  ${STARCONVEX_ROOT}/devel/lib/libstar_cvx.a
-  ${catkin_LIBRARIES}
-  ${PCL_LIBRARIES}
-)
-
-add_executable(subgroup_route_intent_6uav_node
-  src/subgroup_route_intent_4uav_node.cpp)
-target_compile_definitions(subgroup_route_intent_6uav_node PRIVATE
-  ROUTE_INTENT_UAV_COUNT=6)
-target_link_libraries(subgroup_route_intent_6uav_node
-  ${STARCONVEX_ROOT}/devel/lib/libstar_cvx.a
-  ${catkin_LIBRARIES}
-  ${PCL_LIBRARIES}
-)
-
 
 add_executable(subgroup_route_intent_8uav_node
   src/subgroup_route_intent_4uav_node.cpp)
