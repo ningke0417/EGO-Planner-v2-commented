@@ -773,6 +773,7 @@ void GridMap::odomCallback(const nav_msgs::OdometryConstPtr &odom)
   md_.camera_pos_(2) = odom->pose.pose.position.z;
 
   md_.has_odom_ = true;
+  formation_odom_stamp_ = odom->header.stamp;
 }
 
 void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
@@ -789,8 +790,25 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
     return;
   }
 
-  if (latest_cloud.points.size() == 0)
+  if (latest_cloud.empty())
+  {
+    // An empty, fresh lidar frame is still a real observation. Without this,
+    // members initially outside every obstacle's sensor range never publish a
+    // control snapshot and the distributed startup barrier cannot complete.
+    // Keep prior occupancy conservatively unchanged; the independent local
+    // observed-free layer remains responsible for certifying free space.
+    const ros::Time now = ros::Time::now();
+    if (formation_map_enabled_ && img->header.frame_id == mp_.frame_id_ &&
+        !img->header.stamp.isZero() && img->header.stamp > formation_sensor_stamp_ &&
+        (now - img->header.stamp).toSec() <= mp_.odom_depth_timeout_ &&
+        (img->header.stamp - now).toSec() <= 0.05 &&
+        !formation_odom_stamp_.isZero() &&
+        (now - formation_odom_stamp_).toSec() <= mp_.odom_depth_timeout_ &&
+        (formation_odom_stamp_ - now).toSec() <= 0.05 &&
+        md_.camera_pos_.allFinite())
+      formation_sensor_stamp_ = img->header.stamp;
     return;
+  }
 
   if (isnan(md_.camera_pos_(0)) || isnan(md_.camera_pos_(1)) || isnan(md_.camera_pos_(2)))
     return;

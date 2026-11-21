@@ -94,12 +94,19 @@ target_link_libraries(starconvex_shadow_8uav_node
 )
 
 add_executable(swarm_observed_map_8uav_node
-  src/swarm_observed_map_6uav_node.cpp)
+  src/swarm_observed_map_node.cpp)
 target_compile_definitions(swarm_observed_map_8uav_node PRIVATE FORMATION_UAV_COUNT=8)
 target_link_libraries(swarm_observed_map_8uav_node
   ${catkin_LIBRARIES}
   ${PCL_LIBRARIES}
 )
+
+# One runtime-configured observer binary is shared by every formation size.
+add_executable(swarm_observed_map_node src/swarm_observed_map_node.cpp)
+target_link_libraries(swarm_observed_map_node ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+
+catkin_install_python(PROGRAMS scripts/launch_distributed_formation.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
 add_executable(formation_backend_visualizer_8uav_node
   src/formation_backend_visualizer_6uav_node.cpp)

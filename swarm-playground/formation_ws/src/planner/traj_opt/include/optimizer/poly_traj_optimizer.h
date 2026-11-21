@@ -100,6 +100,7 @@ namespace ego_planner
     double max_vel_, max_acc_;                                    // dynamic limits
 
     int formation_num_;
+    std::vector<std::array<int, 2>> formation_slot_edges_;
     bool manual_formation_split_{false};
     bool dynamic_formation_groups_active_{false};
     std::vector<int> dynamic_formation_groups_;

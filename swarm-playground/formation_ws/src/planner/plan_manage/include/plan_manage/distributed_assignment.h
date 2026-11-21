@@ -13,7 +13,17 @@ namespace distributed {
 
 // A row belongs to one physical aircraft; a column names a logical slot.
 // Positive infinity is an unavailable/unobserved route, never a cheap route.
-using AssignmentCosts = std::array<std::array<double, kAgents>, kAgents>;
+class CostRow : public std::vector<double> {
+ public:
+  using std::vector<double>::vector;
+  CostRow() : std::vector<double>(agentCount(), 0.0) {}
+  void fill(double value) { std::fill(begin(), end(), value); }
+};
+class AssignmentCosts : public std::vector<CostRow> {
+ public:
+  using std::vector<CostRow>::vector;
+  AssignmentCosts() : std::vector<CostRow>(agentCount()) {}
+};
 
 struct AssignmentSolution {
   bool feasible = false;
@@ -45,7 +55,7 @@ inline bool assignmentCostsEqual(double a, double b) {
   return std::abs(a - b) <= 1e-10 * scale;
 }
 
-// Exact 8x8 assignment by subset dynamic programming. Switching penalty is
+// Exact runtime-sized assignment (up to 16 members) by subset dynamic programming. Switching penalty is
 // charged once per aircraft that changes slots. Current wins a numerical tie;
 // other ties choose the lexicographically smallest drone->slot permutation.
 // The caller must only supply routes certified by that aircraft's own map.
@@ -54,17 +64,19 @@ inline AssignmentSolution solveAssignment(const AssignmentCosts& costs,
                                           double switching_penalty = 0.0) {
   AssignmentSolution result;
   result.assignment = current;
-  if (!validAssignment(current) || !std::isfinite(switching_penalty) ||
+  if (costs.size() != static_cast<size_t>(agentCount()) ||
+      !validAssignment(current) || !std::isfinite(switching_penalty) ||
       switching_penalty < 0.0) return result;
-  for (const auto& row : costs)
+  for (const auto& row : costs) {
+    if (row.size() != static_cast<size_t>(agentCount())) return result;
     for (double cost : row)
       if (std::isnan(cost) || cost == -std::numeric_limits<double>::infinity())
         return result;
+  }
 
-  constexpr int count = 1 << kAgents;
+  const int count = 1 << kAgents;
   const double infinity = std::numeric_limits<double>::infinity();
-  std::array<double, count> suffix;
-  suffix.fill(infinity);
+  std::vector<double> suffix(count, infinity);
   suffix[count - 1] = 0.0;
   for (int mask = count - 2; mask >= 0; --mask) {
     int id = 0;

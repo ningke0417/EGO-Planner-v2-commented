@@ -4,6 +4,7 @@
 #include <limits>
 #include <plan_manage/distributed_edges.h>
 #include <plan_manage/trajectory_time.h>
+#include <traj_utils/formation_grid.h>
 
 namespace ego_planner
 {
@@ -12,6 +13,7 @@ namespace ego_planner
   {
     exec_state_ = FSM_EXEC_STATE::INIT;
     have_target_ = false;
+    distributed_goal_completed_ = false;
     have_odom_ = false;
     have_recv_pre_agent_ = false;
     flag_escape_emergency_ = true;
@@ -58,10 +60,25 @@ namespace ego_planner
     nh.param("formation/distributed_enabled", distributed_enabled_, false);
     nh.param("formation/distributed_startup_timeout",
              distributed_startup_timeout_, 15.0);
+    int formation_rows, formation_columns;
+    double row_spacing, column_spacing;
+    nh.param("formation/rows", formation_rows, 2);
+    nh.param("formation/columns", formation_columns, form_num_ == 6 ? 3 : 4);
+    nh.param("formation/row_spacing", row_spacing, 1.0);
+    nh.param("formation/column_spacing", column_spacing, 1.0);
+    if (general_dynamic_topology_enabled_ || distributed_enabled_)
+    {
+      if (formation_rows * formation_columns != form_num_)
+        throw std::runtime_error("formation rows * columns must equal formation/num");
+      formation_edges_ = rectangularFormationEdges(formation_rows, formation_columns);
+    }
+    else
+      formation_edges_ = {{{0, 1}}, {{1, 3}}, {{3, 2}}, {{2, 0}}};
+    distributed_assignment_versions_.assign(formation_columns, 0);
     if (distributed_enabled_)
     {
-      if (form_num_ != 8)
-        throw std::runtime_error("distributed mode currently requires eight fixed slots");
+      distributed::configureFormation(formation_rows, formation_columns,
+                                     row_spacing, column_spacing);
       if (distributed_startup_timeout_ <= 0.0)
         throw std::runtime_error("distributed startup timeout must be positive");
       distributed_startup_begin_ = ros::Time::now();
@@ -96,6 +113,13 @@ namespace ego_planner
         return;
       }
       formation_slots_[slot] << pos[0], pos[1], pos[2];
+      if (distributed_enabled_)
+      {
+        const auto &expected = distributed::formation().slot_offsets[slot];
+        for (int axis = 0; axis < 3; ++axis)
+          if (!std::isfinite(pos[axis]) || std::abs(pos[axis] - expected[axis]) > 1e-9)
+            throw std::runtime_error("formation slot offsets do not match the shared grid description");
+      }
     }
     formation_pos_ = formation_slots_[planner_manager_->pp_.drone_id];
     nh.getParam("formation/start", pos);
@@ -217,12 +241,16 @@ namespace ego_planner
       trigger_sub_ = nh.subscribe("/traj_start_trigger", 1, &EGOReplanFSM::triggerCallback, this);
 
       ROS_INFO("Wait for 2 second.");
-      int count = 0;
-      while (ros::ok() && count++ < 2000)
+      // Map callbacks can be expensive with larger formations. Count elapsed
+      // time rather than callback iterations so this remains a two-second wait.
+      const ros::WallTime initialization_deadline =
+          ros::WallTime::now() + ros::WallDuration(2.0);
+      while (ros::ok() && ros::WallTime::now() < initialization_deadline)
       {
         ros::spinOnce();
-        ros::Duration(0.001).sleep();
+        ros::WallDuration(0.001).sleep();
       }
+      if (!ros::ok()) return;
 
       ROS_INFO("Waiting for odometry and trigger");
 
@@ -230,8 +258,9 @@ namespace ego_planner
              (!have_odom_ || !have_trigger_ || !initial_assignment_received_))
       {
         ros::spinOnce();
-        ros::Duration(0.001).sleep();
+        ros::WallDuration(0.001).sleep();
       }
+      if (!ros::ok()) return;
 
       readGivenWpsAndPlan();
     }
@@ -464,14 +493,16 @@ namespace ego_planner
     ack.weak_edge_mask = topology_weak_edge_mask_;
     ack.assignment_epoch = distributed_assignment_epoch_;
     ack.assignment_digest = distributed_assignment_digest_;
-    std::copy(distributed_assignment_versions_.begin(),
-              distributed_assignment_versions_.end(),
-              ack.assignment_versions.begin());
-    for (int id = 0; id < distributed::kAgents; ++id)
+    ack.formation_digest = distributed_enabled_ ? distributed::formationDigest() : 0;
+    ack.assignment_versions = distributed_assignment_versions_;
+    ack.drone_to_slot.resize(form_num_);
+    for (int id = 0; id < form_num_; ++id)
       ack.drone_to_slot[id] =
           id < static_cast<int>(formation_assignment_.size())
               ? formation_assignment_[id] : id;
-    ack.goal_valid = have_target_ && end_pt_.allFinite();
+    // A completed single-goal mission retains its known destination while the
+    // FSM is idle; peers still need it for arrival/assignment diagnostics.
+    ack.goal_valid = (have_target_ || distributed_goal_completed_) && end_pt_.allFinite();
     if (ack.goal_valid)
       for (int axis = 0; axis < 3; ++axis)
         ack.assigned_goal[axis] = end_pt_[axis];
@@ -486,16 +517,7 @@ namespace ego_planner
   void EGOReplanFSM::logEffectiveTopology(const std::string &reason) const
   {
     std::ostringstream edges;
-    std::vector<std::array<int, 2>> formation_edges;
-    if (form_num_ == 6 && general_dynamic_topology_enabled_)
-      formation_edges = {{{0, 1}}, {{1, 2}}, {{3, 4}}, {{4, 5}},
-                         {{0, 3}}, {{1, 4}}, {{2, 5}}};
-    else if (form_num_ == 8 && general_dynamic_topology_enabled_)
-      formation_edges = {{{0, 1}}, {{1, 2}}, {{2, 3}},
-                         {{4, 5}}, {{5, 6}}, {{6, 7}},
-                         {{0, 4}}, {{1, 5}}, {{2, 6}}, {{3, 7}}};
-    else
-      formation_edges = {{{0, 1}}, {{1, 3}}, {{3, 2}}, {{2, 0}}};
+    std::vector<std::array<int, 2>> formation_edges = formation_edges_;
     if (formation_assignment_.size() == static_cast<std::size_t>(form_num_))
     {
       std::vector<int> drone_for_slot(form_num_, -1);
@@ -547,8 +569,8 @@ namespace ego_planner
                 static_cast<unsigned long>(msg->epoch), msg->mode);
       return;
     }
-    const uint32_t expected_edge_count =
-        form_num_ == 8 ? 10u : (form_num_ == 6 ? 7u : 0u);
+    const uint32_t expected_edge_count = general_dynamic_topology_enabled_
+        ? static_cast<uint32_t>(formation_edges_.size()) : 0u;
     if (msg->edge_count != 0u &&
         (msg->edge_count != expected_edge_count ||
          msg->edge_keep_mask >= (uint32_t{1} << msg->edge_count)))
@@ -680,10 +702,11 @@ namespace ego_planner
       const FormationTopologyCommand::ConstPtr &msg)
   {
     const ros::Time now = ros::Time::now();
-    std::array<uint32_t, distributed::kColumns> received_versions{};
-    std::copy(msg->assignment_versions.begin(),
-              msg->assignment_versions.end(), received_versions.begin());
-    distributed::Assignment expected_assignment{};
+    if (msg->formation_digest != distributed::formationDigest() ||
+        msg->assignment_versions.size() != static_cast<std::size_t>(distributed::kColumns) ||
+        msg->drone_to_slot.size() != static_cast<std::size_t>(form_num_)) return;
+    const std::vector<uint32_t> received_versions = msg->assignment_versions;
+    distributed::Assignment expected_assignment = distributed::identityAssignment();
     for (int id = 0; id < distributed::kAgents; ++id)
       expected_assignment[id] = static_cast<int>(msg->drone_to_slot[id]);
     bool valid_assignment = distributed::validAssignment(expected_assignment);
@@ -716,7 +739,7 @@ namespace ego_planner
         (now - msg->header.stamp).toSec() > distributed_topology_timeout_ ||
         (msg->header.stamp - now).toSec() > 0.05 ||
         msg->mode != FormationTopologyCommand::SPLIT ||
-        msg->edge_count != distributed::kEdges ||
+        msg->edge_count != static_cast<uint32_t>(distributed::edgeCount()) ||
         msg->edge_keep_mask >= (uint32_t{1} << distributed::kEdges) ||
         (msg->weak_edge_mask & ~msg->edge_keep_mask) != 0 ||
         !std::isfinite(msg->formation_scale) || msg->formation_scale < 0 ||
@@ -727,7 +750,7 @@ namespace ego_planner
         (msg->reason != "DISTRIBUTED_STARTUP_WAIT" &&
          msg->reason != "DISTRIBUTED_ENDPOINT_LEASES"))
       return;
-    constexpr uint32_t full_mask =
+    const uint32_t full_mask =
         (uint32_t{1} << distributed::kEdges) - uint32_t{1};
     if (!distributed_startup_ready_ &&
         msg->reason == "DISTRIBUTED_ENDPOINT_LEASES")
@@ -776,6 +799,7 @@ namespace ego_planner
           : static_cast<uint32_t>(msg->assignment_digest ^
                                   (msg->assignment_digest >> 32));
     }
+    if (my_slot_changed) distributed_goal_completed_ = false;
     distributed_assignment_versions_ = received_versions;
     distributed_assignment_epoch_ = msg->assignment_epoch;
     distributed_assignment_digest_ = msg->assignment_digest;
@@ -800,13 +824,13 @@ namespace ego_planner
     local->weak_edge_mask = 0;
     local->assignment_epoch = distributed_assignment_epoch_;
     local->assignment_digest = distributed_assignment_digest_;
+    local->formation_digest = distributed::formationDigest();
     distributed::Assignment assignment = distributed::identityAssignment();
     for (int id = 0; id < distributed::kAgents; ++id)
       assignment[id] = formation_assignment_[id];
     local->components = distributed::components(0, assignment);
-    std::copy(distributed_assignment_versions_.begin(),
-              distributed_assignment_versions_.end(),
-              local->assignment_versions.begin());
+    local->assignment_versions = distributed_assignment_versions_;
+    local->drone_to_slot.resize(form_num_);
     for (int id = 0; id < distributed::kAgents; ++id)
       local->drone_to_slot[id] = assignment[id];
     local->formation_scale = 0.15;
@@ -1170,6 +1194,25 @@ namespace ego_planner
 
     case REPLAN_TRAJ:
     {
+      // An arriving vehicle may enter REPLAN_TRAJ because its topology changed
+      // just before the old trajectory expired. Finish an already-reached
+      // single-goal mission here as well, rather than optimizing a zero leg.
+      const LocalTrajData& arrival_traj = planner_manager_->traj_.local_traj;
+      if (distributed_enabled_ && waypoint_num_ == 1 && have_target_ &&
+          ros::Time::now().toSec() - arrival_traj.start_time >= arrival_traj.duration &&
+          (end_pt_ - odom_pos_).norm() <= arrival_position_tolerance_ &&
+          odom_vel_.norm() <= arrival_speed_tolerance_ &&
+          !planner_manager_->violatesWallCollisionGuard(odom_pos_) &&
+          !planner_manager_->grid_map_->getInflateOccupancy(odom_pos_))
+      {
+        have_target_ = false;
+        have_trigger_ = false;
+        distributed_goal_completed_ = true;
+        formation_start_ = wps_[wpt_id_];
+        wpt_id_ = 0;
+        changeFSMExecState(WAIT_TARGET, "DISTRIBUTED_GOAL_REACHED");
+        break;
+      }
 
       if (planFromLocalTraj(1))
       {
@@ -1236,12 +1279,17 @@ namespace ego_planner
 
         have_target_ = false;
         have_trigger_ = false;
+        distributed_goal_completed_ = distributed_enabled_ && waypoint_num_ == 1;
 
         if (target_type_ == TARGET_TYPE::PRESET_TARGET)
         {
           formation_start_ = wps_[wpt_id_];
           wpt_id_ = 0;
-          planNextWaypoint(wps_[wpt_id_], formation_start_);
+          // A completed single-goal distributed mission has no next leg.
+          // Preplanning the same goal produces an unnecessary near-zero-duration
+          // polynomial. Keep serving map/topology callbacks while idle instead.
+          if (!distributed_enabled_ || waypoint_num_ > 1)
+            planNextWaypoint(wps_[wpt_id_], formation_start_);
           // have_trigger_ = false; // must have trigger
         }
 
@@ -1913,6 +1961,12 @@ namespace ego_planner
     LocalTrajData *info = &planner_manager_->traj_.local_traj;
     double t_cur = ros::Time::now().toSec() - info->start_time;
 
+    // A topology-triggered replan can outlive its previous local trajectory.
+    // Polynomial extrapolation then invents an arbitrarily distant start state.
+    // Reinitialize from measured odometry instead of evaluating outside it.
+    if (!std::isfinite(t_cur) || t_cur < 0.0 || t_cur >= info->duration)
+      return planFromGlobalTraj(trial_times);
+
     start_pt_ = info->traj.getPos(t_cur);
     start_vel_ = info->traj.getVel(t_cur);
     start_acc_ = info->traj.getAcc(t_cur);
@@ -1986,6 +2040,7 @@ namespace ego_planner
 
   void EGOReplanFSM::planNextWaypoint(const Eigen::Vector3d next_wp, const Eigen::Vector3d previous_wp)
   {
+    distributed_goal_completed_ = false;
     end_pt_ = assignedWaypointTarget(next_wp, previous_wp);
 
     bool success = false;

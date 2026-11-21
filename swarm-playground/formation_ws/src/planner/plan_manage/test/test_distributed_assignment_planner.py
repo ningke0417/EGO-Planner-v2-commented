@@ -16,6 +16,7 @@ import roslaunch.config
 import rosnode
 import rospkg
 import rospy
+from distributed_test_config import formation_digest
 from ego_planner.msg import FormationTopologyAck, FormationTopologyCommand
 from nav_msgs.msg import Odometry
 from traj_utils.msg import MINCOTraj
@@ -61,6 +62,8 @@ def main():
                                   FormationTopologyCommand, queue_size=1)
     odom_pub = rospy.Publisher('/drone_0_visual_slam/odom', Odometry, queue_size=1)
     command = FormationTopologyCommand()
+    command.formation_digest = formation_digest()
+    command.assignment_versions = [0] * 4
     command.mode = FormationTopologyCommand.SPLIT
     command.edge_count = 10
     command.components = '|'.join('{%d}' % i for i in range(8))

@@ -1,4 +1,3 @@
-#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -17,10 +16,9 @@
 namespace {
 
 #ifndef FORMATION_UAV_COUNT
-#define FORMATION_UAV_COUNT 6
+#define FORMATION_UAV_COUNT 8
 #endif
 
-constexpr std::size_t kUavCount = FORMATION_UAV_COUNT;
 constexpr double kPi = 3.14159265358979323846;
 
 struct VoxelIndex {
@@ -44,12 +42,22 @@ struct VoxelIndexHash {
   }
 };
 
+// Runtime member count supports both the legacy eight-UAV entry and grid launches.
 class SwarmObservedMap {
  public:
   SwarmObservedMap() : private_nh_("~") {
+    private_nh_.param("num_uavs", num_uavs_, FORMATION_UAV_COUNT);
     private_nh_.param("local_drone_id", local_drone_id_, -1);
-    if (local_drone_id_ < -1 || local_drone_id_ >= static_cast<int>(kUavCount))
+    if (num_uavs_ < 1 || num_uavs_ > 16 ||
+        local_drone_id_ < -1 || local_drone_id_ >= num_uavs_)
       throw std::runtime_error("invalid local_drone_id");
+    odom_subscribers_.resize(num_uavs_);
+    cloud_subscribers_.resize(num_uavs_);
+    poses_.resize(num_uavs_);
+    odom_received_.assign(num_uavs_, false);
+    odom_receipt_stamps_.resize(num_uavs_);
+    last_cloud_updates_.resize(num_uavs_);
+    observation_counts_.assign(num_uavs_, 0);
     private_nh_.param<std::string>("odom_topic_suffix", odom_suffix_,
                                    "visual_slam/odom");
     private_nh_.param<std::string>("cloud_topic_suffix", cloud_suffix_,
@@ -76,10 +84,10 @@ class SwarmObservedMap {
         min_update_period_ < 0.0 || min_observations_per_uav_ < 1 ||
         odom_timeout_ <= 0.0 ||
         map_size_x_ <= 0.0 || map_size_y_ <= 0.0 || map_size_z_ <= 0.0) {
-      throw std::runtime_error("invalid six-UAV observed-map parameters");
+      throw std::runtime_error("invalid observed-map parameters");
     }
 
-    for (std::size_t id = 0; id < kUavCount; ++id) {
+    for (int id = 0; id < num_uavs_; ++id) {
       if (local_drone_id_ >= 0 && static_cast<int>(id) != local_drone_id_) continue;
       const std::string prefix = "/drone_" + std::to_string(id) + "_";
       odom_subscribers_[id] = nh_.subscribe<nav_msgs::Odometry>(
@@ -106,7 +114,8 @@ class SwarmObservedMap {
         "/swarm/observed_free", 1, true);
     publish_timer_ = nh_.createTimer(ros::Duration(0.2),
                                      &SwarmObservedMap::publishMap, this);
-    ROS_INFO_STREAM("[6UAV_OBSERVED_MAP] Ready. resolution=" << resolution_
+    ROS_INFO_STREAM("[OBSERVED_MAP] Ready. num_uavs=" << num_uavs_
+                    << " resolution=" << resolution_
                     << " range=" << sensor_range_ << " frame=" << frame_id_);
   }
 
@@ -162,7 +171,7 @@ class SwarmObservedMap {
     if (!odom_received_[id] ||
         (now - odom_receipt_stamps_[id]).toSec() > odom_timeout_) {
       ROS_WARN_THROTTLE(2.0,
-                        "[6UAV_OBSERVED_MAP] Cloud ignored: odometry stale.");
+                        "[OBSERVED_MAP] Cloud ignored: odometry stale.");
       return;
     }
 
@@ -269,11 +278,11 @@ class SwarmObservedMap {
 
   void publishMap(const ros::TimerEvent&) {
     if (!have_observation_) return;
-    for (std::size_t id = 0; id < kUavCount; ++id) {
+    for (int id = 0; id < num_uavs_; ++id) {
       if (local_drone_id_ >= 0 && static_cast<int>(id) != local_drone_id_) continue;
       if (observation_counts_[id] < min_observations_per_uav_) {
         ROS_INFO_STREAM_THROTTLE(
-            1.0, "[6UAV_OBSERVED_MAP] Warmup: waiting for "
+            1.0, "[OBSERVED_MAP] Warmup: waiting for "
                      << min_observations_per_uav_
                      << " observations from every UAV.");
         return;
@@ -282,24 +291,25 @@ class SwarmObservedMap {
     occupied_publisher_.publish(cloudMessage(occupied_, last_observation_stamp_));
     free_publisher_.publish(cloudMessage(known_free_, last_observation_stamp_));
     ROS_INFO_STREAM_THROTTLE(
-        2.0, "[6UAV_OBSERVED_MAP] occupied=" << occupied_.size()
+        2.0, "[OBSERVED_MAP] occupied=" << occupied_.size()
                                                << " known_free="
                                                << known_free_.size());
   }
 
   ros::NodeHandle nh_;
   ros::NodeHandle private_nh_;
-  std::array<ros::Subscriber, kUavCount> odom_subscribers_;
+  int num_uavs_{FORMATION_UAV_COUNT};
+  std::vector<ros::Subscriber> odom_subscribers_;
   int local_drone_id_{-1};
-  std::array<ros::Subscriber, kUavCount> cloud_subscribers_;
+  std::vector<ros::Subscriber> cloud_subscribers_;
   ros::Publisher occupied_publisher_;
   ros::Publisher free_publisher_;
   ros::Timer publish_timer_;
-  std::array<nav_msgs::Odometry, kUavCount> poses_;
-  std::array<bool, kUavCount> odom_received_{};
-  std::array<ros::Time, kUavCount> odom_receipt_stamps_;
-  std::array<ros::Time, kUavCount> last_cloud_updates_;
-  std::array<int, kUavCount> observation_counts_{};
+  std::vector<nav_msgs::Odometry> poses_;
+  std::vector<bool> odom_received_;
+  std::vector<ros::Time> odom_receipt_stamps_;
+  std::vector<ros::Time> last_cloud_updates_;
+  std::vector<int> observation_counts_;
   std::unordered_set<VoxelIndex, VoxelIndexHash> occupied_;
   std::unordered_set<VoxelIndex, VoxelIndexHash> known_free_;
   ros::Time last_observation_stamp_;
@@ -325,12 +335,12 @@ class SwarmObservedMap {
 }  // namespace
 
 int main(int argc, char** argv) {
-  ros::init(argc, argv, "swarm_observed_map_6uav");
+  ros::init(argc, argv, "swarm_observed_map");
   try {
     SwarmObservedMap node;
     ros::spin();
   } catch (const std::exception& error) {
-    ROS_FATAL_STREAM("Unable to start six-UAV observed map: " << error.what());
+    ROS_FATAL_STREAM("Unable to start observed map: " << error.what());
     return 1;
   }
   return 0;

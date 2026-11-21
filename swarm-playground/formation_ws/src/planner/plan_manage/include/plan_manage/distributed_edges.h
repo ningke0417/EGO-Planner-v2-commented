@@ -5,20 +5,81 @@
 #include <cstdint>
 #include <sstream>
 #include <string>
+#include <vector>
+#include <cstring>
+#include <stdexcept>
+#include <traj_utils/formation_grid.h>
 
 namespace ego_planner {
 namespace distributed {
-constexpr int kAgents = 8;
-constexpr int kEdges = 10;
-constexpr int kColumns = 4;
-using Assignment = std::array<int, kAgents>; // physical drone -> logical slot
+// One immutable description is configured before constructing any agent state.
+// Function-local storage keeps the header-only helpers consistent across TUs.
+struct FormationDescription {
+  int rows = 2, columns = 4, agents = 8, edge_count = 10;
+  double row_spacing = 1.0, column_spacing = 1.0;
+  std::vector<std::array<int, 2>> edge_pairs = rectangularFormationEdges(2, 4);
+  std::vector<std::array<double, 3>> slot_offsets = rectangularFormationOffsets(2, 4, 1.0, 1.0);
+};
+inline FormationDescription& formationStorage() {
+  static FormationDescription description;
+  return description;
+}
+inline const FormationDescription& formation() { return formationStorage(); }
+inline int agentCount() { return formation().agents; }
+inline int edgeCount() { return formation().edge_count; }
+inline int rowCount() { return formation().rows; }
+inline int columnCount() { return formation().columns; }
+// These compatibility names remain convenient in loops; they are not template
+// dimensions. Containers use the runtime counts instead of separate binaries.
+struct RuntimeCount {
+  enum Kind { Agents, Edges, Columns } kind;
+  operator int() const {
+    return kind == Agents ? agentCount() : kind == Edges ? edgeCount() : columnCount();
+  }
+};
+constexpr RuntimeCount kAgents{RuntimeCount::Agents};
+constexpr RuntimeCount kEdges{RuntimeCount::Edges};
+constexpr RuntimeCount kColumns{RuntimeCount::Columns};
+inline void configureFormation(int rows, int columns, double row_spacing = 1.0,
+                               double column_spacing = 1.0) {
+  if (rows <= 0 || columns <= 0 || rows > 16 || columns > 16 ||
+      rows * columns < 2 || rows * columns > 16 ||
+      rows * (columns - 1) + (rows - 1) * columns > 31 ||
+      !std::isfinite(row_spacing) || row_spacing <= 0 ||
+      !std::isfinite(column_spacing) || column_spacing <= 0)
+    throw std::invalid_argument("formation requires 2..16 slots and at most 31 grid edges");
+  FormationDescription description;
+  description.rows = rows; description.columns = columns;
+  description.agents = rows * columns;
+  description.row_spacing = row_spacing; description.column_spacing = column_spacing;
+  description.edge_pairs = rectangularFormationEdges(rows, columns);
+  description.slot_offsets = rectangularFormationOffsets(rows, columns, row_spacing, column_spacing);
+  description.edge_count = static_cast<int>(description.edge_pairs.size());
+  formationStorage() = description;
+}
+inline uint32_t fullMask() { return (uint32_t{1} << edgeCount()) - uint32_t{1}; }
+inline uint64_t formationDigest() {
+  uint64_t hash = 14695981039346656037ull;
+  const auto append = [&hash](uint64_t value) {
+    for (int byte = 0; byte < 8; ++byte) {
+      hash = (hash ^ ((value >> (8 * byte)) & 255u)) * 1099511628211ull;
+    }
+  };
+  append(static_cast<uint64_t>(rowCount())); append(static_cast<uint64_t>(columnCount()));
+  uint64_t bits = 0;
+  std::memcpy(&bits, &formation().row_spacing, sizeof(bits)); append(bits);
+  std::memcpy(&bits, &formation().column_spacing, sizeof(bits)); append(bits);
+  return hash ? hash : 1;
+}
+using Assignment = std::vector<int>; // physical drone -> logical slot
 inline Assignment identityAssignment() {
-  Assignment result{};
+  Assignment result(agentCount());
   for (int id = 0; id < kAgents; ++id) result[id] = id;
   return result;
 }
 inline bool validAssignment(const Assignment& assignment) {
-  std::array<bool, kAgents> seen{};
+  if (assignment.size() != static_cast<size_t>(agentCount())) return false;
+  std::vector<bool> seen(agentCount(), false);
   for (int slot : assignment) {
     if (slot < 0 || slot >= kAgents || seen[slot]) return false;
     seen[slot] = true;
@@ -26,29 +87,35 @@ inline bool validAssignment(const Assignment& assignment) {
   return true;
 }
 inline int owner(const Assignment& assignment, int slot) {
+  if (!validAssignment(assignment)) return -1;
   for (int id = 0; id < kAgents; ++id)
     if (assignment[id] == slot) return id;
   return -1;
 }
 inline bool swapColumn(Assignment* assignment, int column) {
-  if (!assignment || !validAssignment(*assignment) ||
+  if (rowCount() != 2 || !assignment || !validAssignment(*assignment) ||
       column < 0 || column >= kColumns) return false;
   const int front = owner(*assignment, column);
   const int rear = owner(*assignment, column + kColumns);
   std::swap((*assignment)[front], (*assignment)[rear]);
   return true;
 }
-inline uint32_t assignmentSignature(const std::array<uint32_t, kColumns>& versions) {
-  if (versions == std::array<uint32_t, kColumns>{{0, 0, 0, 0}}) return 0;
+template <typename Versions>
+inline uint32_t assignmentSignature(const Versions& versions) {
+  if (versions.size() != static_cast<size_t>(columnCount())) return 0;
+  if (std::all_of(versions.begin(), versions.end(), [](uint32_t v) { return v == 0; })) return 0;
   uint32_t hash = 2166136261u;
-  for (uint32_t version : versions) {
-    hash = (hash ^ version) * 16777619u;
-  }
+  for (uint32_t version : versions) hash = (hash ^ version) * 16777619u;
   return hash;
 }
-inline Assignment assignmentFromVersions(
-    const std::array<uint32_t, kColumns>& versions) {
+template <typename Versions>
+inline Assignment assignmentFromVersions(const Versions& versions) {
+  if (versions.size() != static_cast<size_t>(columnCount())) return {};
   Assignment assignment = identityAssignment();
+  if (rowCount() != 2) {
+    if (!std::all_of(versions.begin(), versions.end(), [](uint32_t v) { return v == 0; })) return {};
+    return assignment;
+  }
   for (int column = 0; column < kColumns; ++column)
     if (versions[column] & 1u) swapColumn(&assignment, column);
   return assignment;
@@ -64,11 +131,8 @@ inline double columnSwapGain(double front_x, double front_y,
   return 2.0 * ((rear_x-front_x)*forward_x +
                 (rear_y-front_y)*forward_y);
 }
-inline const std::array<std::array<int, 2>, kEdges>& edges() {
-  static const std::array<std::array<int, 2>, kEdges> value{{
-      {{0, 1}}, {{1, 2}}, {{2, 3}}, {{4, 5}}, {{5, 6}}, {{6, 7}},
-      {{0, 4}}, {{1, 5}}, {{2, 6}}, {{3, 7}}}};
-  return value;
+inline const std::vector<std::array<int, 2>>& edges() {
+  return formation().edge_pairs;
 }
 inline bool edgeTouchesColumn(int edge, int column) {
   if (edge < 0 || edge >= kEdges || column < 0 || column >= kColumns)
@@ -76,11 +140,13 @@ inline bool edgeTouchesColumn(int edge, int column) {
   return edges()[edge][0] % kColumns == column ||
          edges()[edge][1] % kColumns == column;
 }
-template <typename Versions>
+template <typename LocalVersions, typename Versions>
 inline bool edgeVersionsMatch(int edge,
-    const std::array<uint32_t, kColumns>& local,
+    const LocalVersions& local,
     const Versions& remote) {
-  if (edge < 0 || edge >= kEdges) return false;
+  if (edge < 0 || edge >= kEdges ||
+      local.size() != static_cast<size_t>(columnCount()) ||
+      remote.size() != static_cast<size_t>(columnCount())) return false;
   return local[edges()[edge][0] % kColumns] ==
              remote[edges()[edge][0] % kColumns] &&
          local[edges()[edge][1] % kColumns] ==
@@ -105,6 +171,15 @@ struct Lease {
     return session != 0 && now >= stamp - 0.05 && now - stamp <= ttl;
   }
 };
+// Reconnecting and weak edges are certified by visibility/distance. A newly
+// reconnected edge retains that existing overlap exemption during startup, so
+// expensive overlap work cannot starve the heartbeats needed for the barrier.
+// Once startup has passed, score recovery is evaluated normally; an ordinary
+// non-exempt connection always requires its current overlap score.
+inline bool needsOverlapScore(bool kept, bool weak_reconnected,
+                              bool visibility_reconnected, bool startup_ready) {
+  return kept && !weak_reconnected && (!visibility_reconnected || startup_ready);
+}
 inline bool localEdgeEvidenceSafe(bool kept, bool visibility_reconnected,
                                   double distance, double visibility,
                                   double score, double split_distance,
@@ -162,9 +237,11 @@ class WeakRecoveryApproach {
 };
 class EdgeTable {
  public:
+  EdgeTable() : leases_(edgeCount()) {}
   bool updateAt(int edge, int observer, int peer, const Assignment& assignment,
                 uint64_t session, uint64_t sequence, double stamp, double now,
                 double ttl, bool keep, bool weak = false) {
+    if (leases_.size() != static_cast<size_t>(edgeCount())) clear();
     if (edge < 0 || edge >= kEdges || !validAssignment(assignment)) return false;
     const int a = owner(assignment, edges()[edge][0]);
     const int b = owner(assignment, edges()[edge][1]);
@@ -176,6 +253,7 @@ class EdgeTable {
   }
   bool update(int observer, int peer, uint64_t session, uint64_t sequence,
               double stamp, double now, double ttl, bool keep) {
+    if (leases_.size() != static_cast<size_t>(edgeCount())) clear();
     for (int edge = 0; edge < kEdges; ++edge) {
       const auto& pair = edges()[edge];
       for (int endpoint = 0; endpoint < 2; ++endpoint)
@@ -187,6 +265,7 @@ class EdgeTable {
   }
   uint32_t mask(double now, double ttl) const {
     uint32_t result = 0;
+    if (leases_.size() != static_cast<size_t>(edgeCount())) return result;
     for (int edge = 0; edge < kEdges; ++edge) {
       const auto& pair = leases_[edge];
       if (pair[0].keep && pair[1].keep &&
@@ -197,6 +276,7 @@ class EdgeTable {
   }
   uint32_t weakMask(double now, double ttl) const {
     uint32_t result = 0;
+    if (leases_.size() != static_cast<size_t>(edgeCount())) return result;
     for (int edge = 0; edge < kEdges; ++edge) {
       const auto& pair = leases_[edge];
       if (pair[0].keep && pair[1].keep &&
@@ -206,16 +286,18 @@ class EdgeTable {
     }
     return result;
   }
-  void clear() { leases_ = {}; }
+  void clear() { leases_.assign(edgeCount(), {}); }
   void clearColumn(int column) {
+    if (leases_.size() != static_cast<size_t>(edgeCount())) clear();
     for (int edge = 0; edge < kEdges; ++edge)
       if (edgeTouchesColumn(edge, column)) leases_[edge] = {};
   }
  private:
-  std::array<std::array<Lease, 2>, kEdges> leases_{};
+  std::vector<std::array<Lease, 2>> leases_;
 };
 inline std::string components(uint32_t mask, const Assignment& assignment) {
-  std::array<int, kAgents> labels{};
+  if (!validAssignment(assignment)) return {};
+  std::vector<int> labels(agentCount());
   for (int id = 0; id < kAgents; ++id) labels[id] = id;
   for (int edge = 0; edge < kEdges; ++edge) {
     if (!(mask & (uint32_t{1} << edge))) continue;
@@ -224,7 +306,7 @@ inline std::string components(uint32_t mask, const Assignment& assignment) {
     for (int& label : labels) if (label == second) label = first;
   }
   std::ostringstream out;
-  std::array<bool, kAgents> emitted{};
+  std::vector<bool> emitted(agentCount(), false);
   bool first_group = true;
   for (int id = 0; id < kAgents; ++id) {
     if (emitted[labels[id]]) continue;

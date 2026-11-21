@@ -14,6 +14,28 @@
 namespace ego_planner {
 namespace distributed {
 
+// Construct every variable-length field before publishing or indexing it.
+inline void initializeAssignmentMessage(ego_planner::FormationAssignment* message) {
+  if (!message) throw std::invalid_argument("null assignment message");
+  message->formation_digest = formationDigest();
+  const size_t count = static_cast<size_t>(agentCount());
+  message->base_assignment.assign(count, 0);
+  message->drone_to_slot.assign(count, 0);
+  message->member_sessions.assign(count, 0);
+  message->member_sequences.assign(count, 0);
+  message->positions.assign(3 * count, 0.0);
+  message->velocities.assign(3 * count, 0.0);
+  message->slot_goals.assign(3 * count, 0.0);
+  message->costs.assign(count * count, -1.0);
+  message->ack_sessions.assign(count, 0);
+  message->ack_sequences.assign(count, 0);
+  message->ack_stamps.assign(count, 0.0);
+}
+inline std::string assignmentJournal(int id) {
+  return "/distributed_assignment_journal/formation_" + std::to_string(formationDigest()) +
+      "/drone_" + std::to_string(id);
+}
+
 // Trusted-member, rotating-coordinator agreement, not Byzantine consensus or
 // atomic physical activation. Each bid is certified using only its owner's map.
 class AllAgentAssignment {
@@ -26,7 +48,11 @@ class AllAgentAssignment {
     std::array<double, 3> position{}, velocity{}, goal{};
     bool goal_valid{false}, applied{false};
   };
-  using View = std::array<Member, kAgents>;
+  class View : public std::vector<Member> {
+   public:
+    using std::vector<Member>::vector;
+    View() : std::vector<Member>(agentCount()) {}
+  };
   using ReadView = std::function<View()>;
   using Certify = std::function<bool(const std::array<double, 3>&)>;
   using Apply = std::function<void(uint64_t, const Assignment&)>;
@@ -56,10 +82,12 @@ class AllAgentAssignment {
         min_gain_ < 0 || cooldown_ < 0 ||
         period_ <= 0 || hold_ < 0 || relative_gain_ < 0 || switch_penalty_ < 0 ||
         heading_weight_ < 0 || lock_distance_ < 0 || goal_window_ <= lock_distance_)
-      throw std::runtime_error("invalid eight-agent reassignment parameters");
+      throw std::runtime_error("invalid reassignment parameters");
+    if (id_ < 0 || id_ >= agentCount() || !validAssignment(assignment_))
+      throw std::runtime_error("invalid reassignment member or mapping");
     // Per-agent ROS parameter journal survives a process restart in this master.
     // It is not durable storage across loss/restart of the ROS master itself.
-    journal_ = "/distributed_assignment_journal/drone_" + std::to_string(id_);
+    journal_ = assignmentJournal(id_);
     std::string saved;
     std::vector<std::string> entries;
     bool legacy_fallback = false;
@@ -117,6 +145,7 @@ class AllAgentAssignment {
   void tick(bool armed) {
     const auto now = ros::Time::now();
     const View members = view_();
+    if (members.size() != static_cast<size_t>(agentCount())) return;
     replay(members, now);
     if (locked_) {
       // Participants never release their own vote on a timeout. Only the
@@ -205,7 +234,8 @@ class AllAgentAssignment {
  private:
   friend struct AssignmentProtocolTestAccess;
   template <typename Array> static Assignment mapping(const Array& a) {
-    Assignment out{};
+    if (a.size() != static_cast<size_t>(agentCount())) return {};
+    Assignment out(agentCount());
     for (int i = 0; i < kAgents; ++i) out[i] = a[i];
     return out;
   }
@@ -218,6 +248,7 @@ class AllAgentAssignment {
     return last.isZero() || (now - last).toSec() >= interval;
   }
   bool ready(const View& members, const ros::Time& now) const {
+    if (members.size() != static_cast<size_t>(agentCount())) return false;
     for (const auto& m : members) {
       for (double value : m.position) if (!std::isfinite(value)) return false;
       for (double value : m.velocity) if (!std::isfinite(value)) return false;
@@ -231,7 +262,7 @@ class AllAgentAssignment {
     return true;
   }
   static bool same(const Message& a, const Message& b) {
-    return a.base_epoch == b.base_epoch && a.assignment_epoch == b.assignment_epoch &&
+    return a.formation_digest == b.formation_digest && a.base_epoch == b.base_epoch && a.assignment_epoch == b.assignment_epoch &&
         a.base_digest == b.base_digest && a.assignment_digest == b.assignment_digest &&
         a.base_assignment == b.base_assignment && a.drone_to_slot == b.drone_to_slot &&
         a.proposer_id == b.proposer_id && a.proposer_session == b.proposer_session &&
@@ -241,14 +272,25 @@ class AllAgentAssignment {
         a.slot_goals == b.slot_goals && a.costs == b.costs && a.gain == b.gain;
   }
   static bool requestSame(const Message& a, const Message& b) {
-    return a.base_epoch == b.base_epoch && a.base_digest == b.base_digest &&
+    return a.formation_digest == b.formation_digest && a.base_epoch == b.base_epoch && a.base_digest == b.base_digest &&
         a.base_assignment == b.base_assignment &&
         a.proposer_id == b.proposer_id && a.proposer_session == b.proposer_session &&
         a.transaction_id == b.transaction_id && a.snapshot_stamp == b.snapshot_stamp &&
         a.member_sessions == b.member_sessions && a.member_sequences == b.member_sequences &&
         a.positions == b.positions && a.velocities == b.velocities && a.slot_goals == b.slot_goals;
   }
+  static bool validMessageShape(const Message& m) {
+    const size_t count = static_cast<size_t>(agentCount());
+    return m.formation_digest == formationDigest() &&
+        m.base_assignment.size() == count && m.drone_to_slot.size() == count &&
+        m.member_sessions.size() == count && m.member_sequences.size() == count &&
+        m.positions.size() == 3 * count && m.velocities.size() == 3 * count &&
+        m.slot_goals.size() == 3 * count && m.costs.size() == count * count &&
+        m.ack_sessions.size() == count && m.ack_sequences.size() == count &&
+        m.ack_stamps.size() == count;
+  }
   static bool validProposal(const Message& m) {
+    if (!validMessageShape(m)) return false;
     if (m.base_epoch == 0 || m.base_epoch == std::numeric_limits<uint64_t>::max() ||
         m.assignment_epoch != m.base_epoch + 1 || m.transaction_id == 0 ||
         m.proposer_session == 0 || m.proposer_id != m.base_epoch % kAgents ||
@@ -278,7 +320,7 @@ class AllAgentAssignment {
   // An epoch-scoped coordinator transaction ID identifies the decision even
   // if a delayed packet tries to alter other fields in that transaction.
   static bool sameToken(const Message& a, const Message& b) {
-    return a.base_epoch == b.base_epoch && a.proposer_id == b.proposer_id &&
+    return a.formation_digest == b.formation_digest && a.base_epoch == b.base_epoch && a.proposer_id == b.proposer_id &&
         a.proposer_session == b.proposer_session && a.transaction_id == b.transaction_id;
   }
   bool isAborted(const Message& m) const {
@@ -319,6 +361,7 @@ class AllAgentAssignment {
   void request(const View& members, const ros::Time& now) {
     collecting_.reset(new Message());
     auto& m = *collecting_;
+    initializeAssignmentMessage(&m);
     m.proposer_id = id_; m.proposer_session = session_;
     m.transaction_id = ++transactions_;
     m.base_epoch = epoch_; m.assignment_epoch = epoch_ + 1;
@@ -335,11 +378,11 @@ class AllAgentAssignment {
       }
     }
     std::fill(m.costs.begin(), m.costs.end(), -1.0);
-    bids_ = {};
+    bids_.assign(agentCount(), Lease());
     publish(m, Message::REQUEST);
     last_request_ = now;
   }
-  bool ownCosts(const Message& m, std::array<double, kAgents>* row) const {
+  bool ownCosts(const Message& m, std::vector<double>* row) const {
     std::array<double, 3> p{}, v{};
     for (int j = 0; j < 3; ++j) { p[j] = m.positions[3 * id_ + j]; v[j] = m.velocities[3 * id_ + j]; }
     double speed = 0;
@@ -398,7 +441,7 @@ class AllAgentAssignment {
     }
     nh_.setParam(journal_ + "/prepared", encode(m));
     locked_.reset(new Message(m));
-    acks_ = {};
+    acks_.assign(agentCount(), Lease());
   }
   void commit(Message m) {
     if (isAborted(m) || !matchesCurrent(m) || (locked_ && !same(*locked_, m))) return;
@@ -487,13 +530,14 @@ class AllAgentAssignment {
     }
     if (!matchesCurrent(m) || m.sender_session != m.member_sessions[m.sender_id]) return;
     const View members = view_();
+    if (members.size() != static_cast<size_t>(agentCount())) return;
     if (!members[m.sender_id].lease.fresh(now.toSec(), ttl_) ||
         members[m.sender_id].lease.session != m.sender_session) return;
     if (m.phase == Message::REQUEST) {
       if (locked_ || m.sender_id != m.proposer_id || m.sender_session != m.proposer_session ||
           !liveSnapshot(m, members, now)) return;
       Message bid = m;
-      std::array<double, kAgents> row{};
+      std::vector<double> row(agentCount(), 0.0);
       if (!ownCosts(m, &row)) return;
       for (int slot = 0; slot < kAgents; ++slot) bid.costs[id_ * kAgents + slot] = row[slot];
       last_bid_.reset(new Message(bid));
@@ -557,7 +601,9 @@ class AllAgentAssignment {
   uint64_t sequence_{0}, transactions_{0};
   std::string journal_;
   std::unique_ptr<Message> collecting_, locked_, last_bid_;
-  std::array<Lease, kAgents> writers_{}, bids_{}, acks_{};
+  std::vector<Lease> writers_ = std::vector<Lease>(agentCount());
+  std::vector<Lease> bids_ = std::vector<Lease>(agentCount());
+  std::vector<Lease> acks_ = std::vector<Lease>(agentCount());
   std::vector<Message> history_;
   std::vector<Message> aborted_;
   AssignmentGate gate_;

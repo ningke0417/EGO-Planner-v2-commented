@@ -95,6 +95,7 @@ namespace ego_planner
     bool initial_assignment_enabled_{false};
     bool distributed_enabled_{false};
     bool distributed_startup_ready_{false};
+    bool distributed_goal_completed_{false};
     ros::Time distributed_topology_stamp_;
     ros::Time distributed_startup_begin_;
     double distributed_topology_timeout_{1.5};
@@ -105,7 +106,8 @@ namespace ego_planner
     std::vector<Eigen::Vector3d> formation_slots_;
     std::vector<int> formation_assignment_;
     uint32_t assignment_generation_{0};
-    std::array<uint32_t, distributed::kColumns> distributed_assignment_versions_{};
+    std::vector<uint32_t> distributed_assignment_versions_;
+    std::vector<std::array<int, 2>> formation_edges_;
     uint64_t distributed_assignment_epoch_{0};
     uint64_t distributed_assignment_digest_{0};
     bool subgroup_route_intent_active_{false};

@@ -7,6 +7,7 @@ import time
 import rosgraph
 import rosnode
 import rospy
+from distributed_test_config import formation_digest
 from ego_planner.msg import FormationTopologyAck
 from nav_msgs.msg import Odometry
 from visualization_msgs.msg import Marker, MarkerArray
@@ -72,6 +73,7 @@ def main():
                         states[i].publish(msg)
                     continue
                 msg = FormationTopologyAck()
+                msg.formation_digest = formation_digest()
                 msg.header.stamp = rospy.Time.now()
                 msg.drone_id = i
                 msg.mode = 1

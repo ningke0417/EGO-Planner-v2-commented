@@ -10,7 +10,7 @@ If you find it interesting, please give both repos stars generously. Thanks.
 
 <img src="images/cover.jpg" alt="drawing" width="400"/>
 
-从仓库根目录加载 ROS 和编队工作空间环境后，分别运行下面的八机场景：
+从仓库根目录加载 ROS 和编队工作空间环境后，分别运行下面的编队场景：
 
 ```zsh
 source /opt/ros/noetic/setup.zsh
@@ -19,7 +19,68 @@ source swarm-playground/formation_ws/devel/setup.zsh
 
 旧四机、六机实验入口已退出；官方原始编队入口 `formation.launch` 保留。
 
-# 8-UAV 2x4 formation (1 m spacing)
+# 可配置分布式矩形编队
+
+六机、八机、十二机和十六机共用同一套分布式 agent、地图观测、拓扑和启动器。
+`formation_rows` 沿飞行方向 x 排列，`formation_columns` 沿 y 排列；默认行列间距均为 1 m。
+每次只运行下面的一条场景命令，结束后再切换。
+
+```bash
+# 两行三列，六机。
+roslaunch ego_planner distributed_fixed_wall.launch formation_rows:=2 formation_columns:=3
+roslaunch ego_planner distributed_sparse_random.launch formation_rows:=2 formation_columns:=3
+
+# 三行四列，十二机。
+roslaunch ego_planner distributed_fixed_wall.launch formation_rows:=3 formation_columns:=4
+roslaunch ego_planner distributed_sparse_random.launch formation_rows:=3 formation_columns:=4
+
+# 四行四列，十六机。
+roslaunch ego_planner distributed_fixed_wall.launch formation_rows:=4 formation_columns:=4
+roslaunch ego_planner distributed_sparse_random.launch formation_rows:=4 formation_columns:=4
+
+# 原两行四列八机也可以使用同一入口。
+roslaunch ego_planner distributed_fixed_wall.launch formation_rows:=2 formation_columns:=4
+roslaunch ego_planner distributed_sparse_random.launch formation_rows:=2 formation_columns:=4
+```
+
+新入口固定使用分布式模式，不需要 `coordination_mode`。固定墙默认第一堵墙长 6 m，
+随机场景沿用 `random_seed:=17` 的地图；固定墙默认关闭换槽，随机场景默认开启
+`swap_scope:=all`。可传 `rviz:=false` 关闭显示，或用 `row_spacing`、`column_spacing`
+设置行列间距；当前相邻间距必须大于 0 且不超过初始重连距离 1.7 m。
+新入口的全员启动等待告警阈值为 60 s；未就绪时继续保持，不改变运行中的地图和状态新鲜度阈值。
+消息已改用动态成员数组并携带 `formation_digest`，更新后需先结束全部旧节点，
+在 `formation_ws` 完整编译、重新 source，再重新启动整套场景：
+
+```bash
+cd swarm-playground/formation_ws
+catkin_make -j2 -l2
+source devel/setup.bash
+```
+
+zsh 终端使用 `source devel/setup.zsh`。
+
+新队形当前的运行验证范围是启动屏障、成员通信、拓扑应用和每机首条轨迹输出；尚未完成各队形、各场景的
+全航程到达与避碰验收。后文历史八机实验记录不代表新六机、十二机、十六机的飞行结果。
+
+详细结构和验证范围见 [分布式编队说明](docs/distributed-formation.md)。
+
+# 密集方柱障碍物场景
+
+`distributed_cluttered_random.launch` 提供类似散布柱状障碍物示意图的宽障碍场，
+与前面的队形共用分布式启动器和地图生成器。默认地图为 40×18×3 m，
+60 个宽度 0.45–1.1 m 的方柱，种子 17；起终点位于 x=-17/17 m，
+障碍物沿 x 在两端各留出 5 m 空地，不添加固定长墙或强制窄通道。
+
+```bash
+# 图示的四行四列十六机；六机、八机、十二机只需替换相同行列参数。
+roslaunch ego_planner distributed_cluttered_random.launch formation_rows:=4 formation_columns:=4
+```
+
+可用 `small_obstacle_count` 调整数量，`small_size_min`、`small_size_max` 调整方柱横截面，
+`random_seed` 调整布局，`obstacle_separation` 调整柱间最小几何间隔。
+修改密度后需要重新验证可通行性；生成成功不代表每种队形一定能完成全航程。
+
+# 原八机场景入口
 固定墙和随机障碍物入口默认使用分布式模式，集中式对照仍可显式选择：
 ```bash
 roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch
@@ -147,8 +208,7 @@ source devel/setup.zsh
 roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch \
   coordination_mode:=distributed
 分布式随机障碍物场景：
-roslaunch ego_planner rectangle_8uav_sparse_random.launch \              
-  coordination_mode:=distributed
+roslaunch ego_planner rectangle_8uav_sparse_random.launch
 从本机连接高性能电脑:
 ssh rise-lab@10.252.41.159
 在高性能电脑运行命令：

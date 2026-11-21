@@ -3,6 +3,7 @@ uint8 PREPARE=1
 uint8 ACK=2
 uint8 COMMIT=3
 std_msgs/Header header
+uint64 formation_digest
 uint64 sender_session
 uint64 sequence
 uint32 sender_id

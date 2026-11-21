@@ -31,11 +31,11 @@ void require(bool condition, const std::string& why) {
 }
 
 struct Fixture {
-  std::array<std::unique_ptr<Protocol>, kAgents> nodes;
-  std::array<uint64_t, kAgents> epochs{}, sessions{}, state_sequences{};
-  std::array<Assignment, kAgents> assignments;
-  std::array<std::array<double, 3>, kAgents> positions{}, goals{};
-  std::array<unsigned, kAgents> certifications{};
+  std::vector<std::unique_ptr<Protocol>> nodes = std::vector<std::unique_ptr<Protocol>>(agentCount());
+  std::vector<uint64_t> epochs = std::vector<uint64_t>(agentCount()), sessions = std::vector<uint64_t>(agentCount()), state_sequences = std::vector<uint64_t>(agentCount());
+  std::vector<Assignment> assignments = std::vector<Assignment>(agentCount());
+  std::vector<std::array<double, 3>> positions = std::vector<std::array<double, 3>>(agentCount()), goals = std::vector<std::array<double, 3>>(agentCount());
+  std::vector<unsigned> certifications = std::vector<unsigned>(agentCount());
   bool block_last_vote = true;
   std::vector<Message> prepares, aborts, commits;
   ros::Subscriber observer;
@@ -106,7 +106,8 @@ struct Fixture {
           const unsigned call = certifications[id]++;
           // Eight initial calls produce this member's BID row. Only its later
           // candidate vote is denied, so others must not mistake bids for ACKs.
-          return !(id == kAgents - 1 && block_last_vote && call >= kAgents);
+          return !(id == kAgents - 1 && block_last_vote &&
+                   call >= static_cast<unsigned>(agentCount()));
         },
         [this, id](uint64_t epoch, const Assignment& assignment) {
           epochs[id] = epoch;
@@ -175,7 +176,7 @@ int main(int argc, char** argv) {
         }
       } else if (stage == 1 && test.all(2, reversed)) {
         test.block_last_vote = true;
-        test.certifications.fill(0);
+        std::fill(test.certifications.begin(), test.certifications.end(), 0);
         test.setPositions(identityAssignment());
         stage = 2;
         stage_start = ros::WallTime::now().toSec();
@@ -209,7 +210,7 @@ int main(int argc, char** argv) {
         require(Access::aborted(*test.nodes[1], first) && Access::aborted(*test.nodes[1], second),
                 "journal restart forgot aborted tokens");
         std::vector<std::string> chain;
-        require(nh.getParam("/distributed_assignment_journal/drone_1/commits", chain) && chain.size() == 2,
+        require(nh.getParam((assignmentJournal(1) + "/commits"), chain) && chain.size() == 2,
                 "journal did not retain the full two-commit certificate chain");
         std::cout << "PASS: retry after recovery commits; two-epoch history and abort blacklist restored\n";
         // Six parked members must reserve their own slots without freezing a

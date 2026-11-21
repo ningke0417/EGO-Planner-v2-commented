@@ -209,3 +209,26 @@ TEST(DistributedAssignment, FullPermutationDigestIsStableAndUnique) {
   assignment[1] = 0;
   EXPECT_EQ(0u, fullAssignmentSignature(assignment));
 }
+
+TEST(DistributedAssignment, OneSolverHandlesSixEightTwelveAndSixteenMembers) {
+  const auto saved = formation();
+  struct Restore { FormationDescription saved; ~Restore() { formationStorage() = saved; } } restore{saved};
+  for (const auto& shape : std::vector<std::array<int, 2>>{{{2, 3}}, {{2, 4}}, {{3, 4}}, {{4, 4}}}) {
+    configureFormation(shape[0], shape[1]);
+    auto wanted = identityAssignment();
+    std::reverse(wanted.begin(), wanted.end());
+    const auto solution = solveAssignment(costsFor(wanted), identityAssignment(), 0.1);
+    ASSERT_TRUE(solution.feasible);
+    EXPECT_EQ(wanted, solution.assignment);
+    EXPECT_GT(solution.net_gain, 0.0);
+    EXPECT_GT(fullAssignmentSignature(wanted), 0u);
+    auto invalid = costsFor(wanted);
+    invalid.front().pop_back();
+    EXPECT_FALSE(solveAssignment(invalid, identityAssignment()).feasible);
+    invalid = costsFor(wanted); invalid.pop_back();
+    EXPECT_FALSE(solveAssignment(invalid, identityAssignment()).feasible);
+    auto current = identityAssignment();
+    current.pop_back();
+    EXPECT_FALSE(solveAssignment(costsFor(wanted), current).feasible);
+  }
+}

@@ -17,6 +17,7 @@ import threading
 import time
 
 import rospy
+from distributed_test_config import formation_digest
 from nav_msgs.msg import Odometry
 from sensor_msgs import point_cloud2
 from sensor_msgs.msg import PointCloud2
@@ -126,6 +127,7 @@ class Harness:
             if drone in commands:
                 command = commands[drone][1]
                 ack = FormationTopologyAck()
+                ack.formation_digest = command.formation_digest
                 ack.header.stamp = stamp
                 ack.epoch = command.epoch
                 ack.drone_id = drone

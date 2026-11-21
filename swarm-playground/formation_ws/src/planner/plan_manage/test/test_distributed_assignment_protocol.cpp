@@ -28,6 +28,7 @@ using Message = AllAgentAssignment::Message;
 namespace {
 Message prepared() {
   Message m;
+  initializeAssignmentMessage(&m);
   m.header.stamp = ros::Time(11, 0);
   m.snapshot_stamp = ros::Time(10, 0);
   m.phase = Message::PREPARE;
@@ -205,4 +206,46 @@ TEST(AssignmentProtocol, JournalEncodingPreservesCertificatesAndRejectsTruncatio
   EXPECT_FALSE(Access::decode(encoded + "00", &b));
   EXPECT_FALSE(Access::decode("xyz", &b));
   EXPECT_FALSE(Access::decode(std::string(20002, '0'), &b));
+}
+
+TEST(AssignmentProtocol, RuntimeMembershipCertificatesRejectShortArraysAndOtherConfigurations) {
+  const auto saved = formation();
+  struct Restore { FormationDescription saved; ~Restore() { formationStorage() = saved; } } restore{saved};
+  for (const auto& shape : std::vector<std::array<int, 2>>{{{2, 3}}, {{2, 4}}, {{3, 4}}, {{4, 4}}}) {
+    configureFormation(shape[0], shape[1]);
+    Message m;
+    initializeAssignmentMessage(&m);
+    m.header.stamp = ros::Time(11, 0); m.snapshot_stamp = ros::Time(10, 0);
+    m.phase = Message::COMMIT; m.base_epoch = 1; m.assignment_epoch = 2;
+    m.sender_id = m.proposer_id = 1; m.sender_session = m.proposer_session = 102;
+    m.sequence = 9; m.transaction_id = 11; m.gain = 10;
+    const auto base = identityAssignment();
+    auto next = base; std::swap(next[0], next[1]);
+    for (int id = 0; id < agentCount(); ++id) {
+      m.base_assignment[id] = base[id]; m.drone_to_slot[id] = next[id];
+      m.member_sessions[id] = m.ack_sessions[id] = id + 101;
+      m.member_sequences[id] = id + 20; m.ack_sequences[id] = id + 30;
+      m.ack_stamps[id] = 10.5;
+    }
+    m.base_digest = fullAssignmentSignature(base);
+    m.assignment_digest = fullAssignmentSignature(next);
+    ASSERT_TRUE(Access::certificate(m));
+    Message decoded;
+    ASSERT_TRUE(Access::decode(Access::encode(m), &decoded));
+    EXPECT_TRUE(Access::certificate(decoded));
+    auto invalid = m; invalid.positions.pop_back(); EXPECT_FALSE(Access::proposal(invalid));
+    invalid = m; invalid.velocities.pop_back(); EXPECT_FALSE(Access::proposal(invalid));
+    invalid = m; invalid.slot_goals.pop_back(); EXPECT_FALSE(Access::proposal(invalid));
+    invalid = m; invalid.costs.pop_back(); EXPECT_FALSE(Access::proposal(invalid));
+    invalid = m; invalid.base_assignment.pop_back(); EXPECT_FALSE(Access::proposal(invalid));
+    invalid = m; invalid.drone_to_slot.pop_back(); EXPECT_FALSE(Access::proposal(invalid));
+    invalid = m; invalid.member_sessions.pop_back(); EXPECT_FALSE(Access::proposal(invalid));
+    invalid = m; invalid.ack_sessions.pop_back(); EXPECT_FALSE(Access::certificate(invalid));
+    invalid = m; ++invalid.formation_digest; EXPECT_FALSE(Access::proposal(invalid));
+    invalid = m; invalid.ack_sequences.back() = 0; EXPECT_FALSE(Access::certificate(invalid));
+    const auto journal = assignmentJournal(0);
+    configureFormation(shape[0], shape[1], 1.1, 1.0);
+    EXPECT_FALSE(Access::proposal(m));
+    EXPECT_NE(journal, assignmentJournal(0));
+  }
 }

@@ -1,4 +1,45 @@
-# 8 机分布式编队开发版
+# 分布式矩形编队开发版
+
+当前新增运行时可配置的矩形编队入口，支持 2×3 六机、2×4 八机、3×4 十二机、
+4×4 十六机。行沿 x 轴、列沿 y 轴，槽位按行优先编号；行列间距默认 1 m。
+新入口只运行分布式模式，旧八机入口及其集中式对照仍保留。
+
+新增 `distributed_cluttered_random.launch` 为散布方柱场：默认 60 根方柱，横截面边长
+0.45–1.1 m，40×18×3 m 地图，起终点 x=-17/17 m，端点纵向净空 5 m。
+它复用随机障碍物生成器，关闭堆叠块和窄通道配置，并使用同一套行列参数：
+
+```bash
+roslaunch ego_planner distributed_cluttered_random.launch formation_rows:=4 formation_columns:=4
+```
+
+使用 `small_obstacle_count`、`small_size_min`、`small_size_max`、`obstacle_separation`
+和 `random_seed` 调整密度、大小、间隔与布局；地图文件不按无人机数量复制。
+
+```bash
+# 固定墙：将行列设为 2/3、3/4、4/4 即为六机、十二机、十六机。
+roslaunch ego_planner distributed_fixed_wall.launch formation_rows:=2 formation_columns:=3
+# 随机障碍物。
+roslaunch ego_planner distributed_sparse_random.launch formation_rows:=3 formation_columns:=4
+```
+
+三个通用入口都由 `launch_distributed_formation.py` 在内存中构造启动配置，复用
+`run_in_sim.launch`、`advanced_param.xml` 和 `simulator.xml`，不会生成按数量复制的文件。
+所有成员使用相同的行列、间距、槽位和邻边配置，协议携带 `formation_digest`
+配置摘要并校验动态数组长度。配置不匹配的证据和命令不会被当成当前编队输入。
+观测节点使用运行时 `num_uavs`，每机控制仍只使用本机传感器和规划器地图。
+分布式显示器显示全部成员，不限于旧 RViz 配置中的前八条个体轨迹。
+
+固定墙沿用 6 m 第一墙、0.2 m 安全距离；随机地图沿用种子 17。固定墙默认
+`swap_enabled:=false`，随机场景默认 `swap_enabled:=true swap_scope:=all`；旧的
+`swap_scope:=column` 仅适用于两行。`row_spacing`、`column_spacing` 控制队形，
+当前相邻间距必须大于 0 且不超过初始普通重连门槛 1.7 m，避免初始边一直无法接通；
+默认值仍为 1 m。`rviz:=false` 可关闭显示。新入口的
+`distributed_startup_timeout` 默认 60 s，
+只调整首次全员启动等待的告警阈值，超时仍保持等待，不放宽运行中的地图、证据和回执新鲜度。
+消息定义更新后必须先结束全部旧节点，完整编译、重新 source 并重启整套场景，
+不能混用旧二进制或旧消息定义。当前新队形的运行验证限于启动屏障、成员通信和
+拓扑应用及每机首条轨迹输出，尚未完成所有队形、所有场景的全航程到达及避碰验收。后文历史八机记录
+保留其当时的版本与参数含义，不作为新六机、十二机、十六机的飞行结果。
 
 分支：`distributed`。集中式实验代码仍可通过同一 launch 的模式参数运行；
 `centralized-baseline` 分支保留改造前基线。
@@ -53,13 +94,14 @@ roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch coordination_
 - 默认租约 1.5 秒、普通重连持续 0.8 秒、弱重连持续 0.3 秒、切断保持 1 秒；序列号拒绝重复和乱序，
   进程 session 拒绝已见过的新 session 之前的旧报文。
 - 启动时 `drone_id == slot`；物理 ID 始终固定，运行中的槽位占用可按下述协议变更。
-- 可选换槽的默认范围为 `swap_scope:=all`：八机参与完整槽位排列的重新分配，
-  允许跨列及多机轮换；`swap_scope:=column` 保留原四组前后交换。`drone_id` 始终
+- 可选换槽的默认范围为 `swap_scope:=all`：全部成员参与完整槽位排列的重新分配，
+  允许跨列及多机轮换；`swap_scope:=column` 仅在两行队形中保留各列前后交换。`drone_id` 始终
   是物理身份，不会重编号；逻辑编队边会按新槽位占用者映射到物理无人机。
 - 每机 FSM 只接收本机 agent 的拓扑，并有独立 1.5 秒 watchdog。
   agent 失联后，本机取消全部编队边，普通障碍/机间轨迹避碰逻辑仍然保留。
-- 分布式启动采用 fail-closed 屏障：每个 agent 必须先获得全部 10 条边的双端新鲜
-  KEEP 证据，再等待 8 个 agent 都广播启动就绪；屏障释放前 FSM 停留在
+- 分布式启动采用 fail-closed 屏障：每个 agent 必须先获得当前队形全部邻边的双端新鲜
+  KEEP 证据，再等待全部成员都广播启动就绪；2×3、2×4、3×4、4×4 分别为
+  7、10、17、24 条边。屏障释放前 FSM 停留在
   `WAIT_TARGET`，不会发布初始轨迹。屏障一旦释放即锁存，不干预飞行中的正常分裂。
 - 固定墙和随机场景的分布式局部观测地图当前使用 360 度水平视场；若改为
   180 度，后向相邻边可能因缺少已知空闲证据而保持 CUT，需要重新验证启动屏障。
@@ -67,7 +109,15 @@ roslaunch ego_planner rectangle_8uav_fixed_split_merge_wall.launch coordination_
   内部兼容消息的 `mode=SPLIT` 表示采用边约束，不代表图一定不连通。
   判断分裂请查看 `components` 和 `edge_keep_mask`。
 - 关闭分布式模式中的中央路径意图、全体进度同步、合并同步和顺序启动等待。
-- 8 个规划器直接在 `/swarm/trajectories` 互换轨迹，无共享 UDP 中继进程。
+- 所有成员的规划器直接在 `/swarm/trajectories` 互换轨迹，无共享 UDP 中继进程。
+
+一次几何评估内，相邻边共用同一地图和位置快照对应的 StarConvex 构造，评估完成后
+丢弃构造缓存。若后续真实传感器帧的地图几何内容与两个物理端点坐标完全相同，
+可复用该边的精确重叠评分；任一内容或坐标变化就重新计算。每次仍先检查当前
+地图、端点状态和已知空闲连线，旧帧不会因评分复用而变新鲜。
+启动恢复或弱连接等不消费重叠评分的分支跳过该计算。
+因此 `FormationEdgeEvidence.score=0` 可能只是未计算时的诊断占位值；应结合
+`decision`、`visibility` 和所处评估分支解释，不能将它直接当作真实重叠度为零。
 
 本机拓扑话题 `/drone_i_formation_agent/topology` 是本机内部接口；
 不同无人机的拓扑消息 `epoch` 不比较；完整换槽的 `assignment_epoch` 则是全员共享的
@@ -94,6 +144,9 @@ agent 只订阅本机快照，并读取本机规划器初始化参数的栅格�
 
 快照失效和观测失效独立受同一 `map_timeout` 约束，取二者较早的传感器时间戳。
 重复发布旧快照不会刷新有效期；无快照时启动屏障不会放行，飞行中快照过期则移除相关边。
+空点云也可能是传感器范围内没有障碍物的一次真实观测。当前规划器只在空帧时间戳
+递增且新鲜、坐标系匹配、本机里程计新鲜且位置有限时更新控制快照的源时间戳；
+此前的占用缓冲区保持不变，已知空闲仍由独立的本机观测层认证。旧帧或失配帧不会续期。
 原有距离、重叠分数、弱恢复靠近门槛和重连计时规则不因这次几何修订而放宽。
 旧几何构造接口保留，集中式判据和规划器本身的障碍膨胀计算不变。
 
@@ -219,6 +272,17 @@ rosparam set /distributed_formation_visualizer/show_cut_edges true
 状态只比较该边两个端点的掩码，不比较不同无人机的 epoch。
 标记带有限生命周期，显示节点退出后旧线会自动消失。
 
+到达终点不会强制设置全连接；各边仍要满足双端新鲜证据、已知空闲连线和距离门槛。
+这里的“全连接”指恢复矩形编队全部邻边：六机 7 条、八机 10 条、十二机 17 条、
+十六机 24 条，并非每两架无人机之间都画一条边。
+大编队中重复解码、重建未变化的地图会延误证据处理；当前按点云完整布局和字节内容
+精确判断是否能复用解码与体素场；地图和端点位置完全相同时也复用精确重叠评分，
+但仍只使用真实传感器帧推进源时间戳。
+缓存不为重复旧帧或停止更新的地图续期。
+单终点分布式任务到点后保留终点信息并继续接收地图、状态和拓扑，不再预规划同一终点。
+拓扑变化恰好把末段 FSM 切到 `REPLAN_TRAJ` 时，也会检查真实位置、速度和障碍安全条件
+来完成已到达的任务；过期局部轨迹不会被外推为下一次规划的起点，而是从里程计重新初始化。
+
 已有仿真可在重新编译、source 后单独运行显示节点：
 
 ```bash
@@ -258,6 +322,26 @@ python3 src/planner/plan_manage/test/test_distributed_visualizer.py
    不能辨别从未见过的旧进程，实机版本应使用持久启动代号与明确的成员协议。
 
 ## 验证
+
+新增的通用入口测试路径相对 `src/planner/plan_manage/`：
+
+- `test/test_distributed_launch.py`：无需 master，检查四种队形、三类场景的完整启动配置和本机地图隔离。
+- `test/test_distributed_grid_runtime.py --rows 4 --columns 4 --scene fixed_wall --port 11811`：
+  自行启动独立高端口 master，验证全员屏障、动态拓扑、地图隔离和每机首条轨迹；
+  `--scene sparse_random` 切换稀疏随机场景，`--scene cluttered_random` 切换密集方柱场，
+  行列参数适用于六机、八机、十二机和十六机。
+  增加 `--check-goal-connectivity --goal-hold 10 --timeout 220` 可检查全员到点、低速，
+  且所有新鲜拓扑回执持续 10 秒保持全部正常邻边；默认只检查启动。
+- `test/test_distributed_empty_cloud.py`：自行启动独立 master 和单个真实规划器，
+  检查有效空帧更新源时间戳且保留旧占用，以及异常时间戳、坐标系和过期里程计不能续期。
+
+固定墙的十二机、十六机已通过到达后连续 10 秒完整正常拓扑检查。
+密集方柱场已检查默认种子实际生成 60 个不重叠障碍物、端点净空和十六机启动；
+尚未完成该场景的全航程到达与避碰验收。
+
+上述运行测试结束后会清理各自启动的进程，日志保存在 `/tmp/ego-*`；
+这些检查不等于全航程到达或避碰验收。大编队还修正了原 FSM 初始化等待按
+2000 次回调计数的问题，改为按实际经过的 2 秒计时，避免地图回调把等待拖长。
 
 ```bash
 catkin_make -j2 -l2 run_tests_ego_planner_gtest_test_distributed_edges

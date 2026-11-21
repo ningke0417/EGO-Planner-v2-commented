@@ -24,9 +24,36 @@ using starconvex_adapter::VoxelObstacleField;
 using starconvex_adapter::OriginalStarSpace;
 using starconvex_adapter::subtract;
 using starconvex_adapter::norm;
+// Only identical geometry may share a decoded cloud/voxel field. Sensor headers
+// are deliberately excluded: a real new frame may contain the same geometry,
+// but its source timestamp must still pass the normal monotonicity guards.
+bool sameCloudGeometry(const sensor_msgs::PointCloud2& first,
+                       const sensor_msgs::PointCloud2& second) {
+  if (first.width != second.width || first.height != second.height ||
+      first.is_bigendian != second.is_bigendian ||
+      first.point_step != second.point_step || first.row_step != second.row_step ||
+      first.is_dense != second.is_dense || first.fields.size() != second.fields.size())
+    return false;
+  for (size_t index = 0; index < first.fields.size(); ++index) {
+    const auto& a = first.fields[index];
+    const auto& b = second.fields[index];
+    if (a.name != b.name || a.offset != b.offset ||
+        a.datatype != b.datatype || a.count != b.count)
+      return false;
+  }
+  return first.data == second.data;
+}
 class Agent {
  public:
   Agent() : nh_("~"), session_(ros::WallTime::now().toNSec()) {
+    int rows, columns;
+    double row_spacing, column_spacing;
+    nh_.param("formation_rows", rows, 2);
+    nh_.param("formation_columns", columns, 4);
+    nh_.param("row_spacing", row_spacing, 1.0);
+    nh_.param("column_spacing", column_spacing, 1.0);
+    de::configureFormation(rows, columns, row_spacing, column_spacing);
+    initializeStorage();
     nh_.param("drone_id", id_, -1);
     nh_.param("evidence_timeout", ttl_, 1.5);
     nh_.param("map_timeout", map_timeout_, 1.0);
@@ -48,6 +75,8 @@ class Agent {
     nh_.param<std::string>("swap_scope", swap_scope_, "all");
     if (swap_scope_ != "all" && swap_scope_ != "column")
       throw std::runtime_error("swap_scope must be all or column");
+    if (swap_scope_ == "column" && de::rowCount() != 2)
+      throw std::runtime_error("column swaps require a two-row formation; use swap_scope=all");
     assignment_epoch_ = swap_scope_ == "all" ? 1 : 0;
     nh_.param("swap_gain_min", swap_gain_min_, 0.15);
     nh_.param("swap_eval_period", swap_eval_period_, 0.5);
@@ -109,6 +138,10 @@ class Agent {
           "/drone_" + std::to_string(id) + "/formation_applied", 1,
           [this, id](const ego_planner::FormationTopologyAck::ConstPtr& msg) {
             if (msg->drone_id != static_cast<unsigned>(id) ||
+                msg->formation_digest != de::formationDigest() ||
+                msg->edge_count != static_cast<unsigned>(de::edgeCount()) ||
+                msg->assignment_versions.size() != static_cast<size_t>(de::columnCount()) ||
+                msg->drone_to_slot.size() != static_cast<size_t>(de::agentCount()) ||
                 msg->header.stamp <= applied_stamps_[id] ||
                 msg->header.stamp > ros::Time::now() + ros::Duration(0.05)) return;
             applied_stamps_[id] = msg->header.stamp;
@@ -154,11 +187,39 @@ class Agent {
     timer_ = nh_.createTimer(ros::Duration(0.1), &Agent::tick, this);
   }
  private:
+  void initializeStorage() {
+    const size_t agents = de::agentCount(), columns = de::columnCount();
+    const size_t edges = de::edgeCount();
+    applied_subs_.resize(agents);
+    assignment_ = de::identityAssignment();
+    versions_.assign(columns, 0);
+    peer_versions_.assign(agents, std::vector<uint32_t>(columns, 0));
+    applied_versions_.assign(agents, std::vector<uint32_t>(columns, 0));
+    applied_stamps_.resize(agents);
+    peer_epochs_.assign(agents, 0); peer_digests_.assign(agents, 0);
+    applied_epochs_.assign(agents, 0); applied_digests_.assign(agents, 0);
+    peer_assignments_.assign(agents, de::identityAssignment());
+    applied_assignments_.assign(agents, de::identityAssignment());
+    velocities_.resize(agents); goals_.resize(agents);
+    goal_valid_.assign(agents, false);
+    swap_writers_.resize(agents);
+    pending_.resize(columns); history_.resize(columns);
+    candidate_since_.resize(columns);
+    positions_.resize(agents);
+    state_leases_.resize(agents); startup_leases_.resize(agents);
+    table_.clear();
+    kept_.assign(edges, false); weak_reconnected_.assign(edges, false);
+    visibility_reconnected_.assign(edges, false); candidate_weak_.assign(edges, false);
+    approach_.resize(edges);
+    overlap_cache_.resize(edges);
+    ready_since_.resize(edges); cut_since_.resize(edges); normal_since_.resize(edges);
+  }
   void odom(const nav_msgs::Odometry::ConstPtr& msg) {
     const auto& p = msg->pose.pose.position;
     if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) return;
     ego_planner::FormationAgentState value;
     value.header = msg->header;
+    value.formation_digest = de::formationDigest();
     // Never turn an old sensor sample into a fresh peer heartbeat.
     value.session = session_;
     value.sequence = ++state_sequence_;
@@ -167,12 +228,11 @@ class Agent {
     const auto& v = msg->twist.twist.linear;
     if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z)) return;
     value.velocity = {{v.x, v.y, v.z}};
-    std::copy(versions_.begin(), versions_.end(),
-              value.assignment_versions.begin());
+    value.assignment_versions.assign(versions_.begin(), versions_.end());
     value.slot_id = assignment_[id_];
     value.assignment_epoch = assignment_epoch_;
     value.assignment_digest = assignment_epoch_ ? de::fullAssignmentSignature(assignment_) : 0;
-    std::copy(assignment_.begin(), assignment_.end(), value.drone_to_slot.begin());
+    value.drone_to_slot.assign(assignment_.begin(), assignment_.end());
     std::copy(own_goal_.begin(), own_goal_.end(), value.assigned_goal.begin());
     value.goal_valid = own_goal_valid_ &&
         applied_epochs_[id_] == assignment_epoch_ &&
@@ -182,16 +242,21 @@ class Agent {
     state_pub_.publish(value);
   }
   void state(const ego_planner::FormationAgentState::ConstPtr& msg) {
-    if (msg->drone_id >= de::kAgents) return;
+    if (msg->formation_digest != de::formationDigest() ||
+        msg->drone_id >= static_cast<unsigned>(de::agentCount()) ||
+        msg->assignment_versions.size() != static_cast<size_t>(de::columnCount()) ||
+        msg->drone_to_slot.size() != static_cast<size_t>(de::agentCount())) return;
     for (double value : msg->position) if (!std::isfinite(value)) return;
     for (double value : msg->velocity) if (!std::isfinite(value)) return;
     for (double value : msg->assigned_goal) if (!std::isfinite(value)) return;
-    de::Assignment peer_assignment{};
+    de::Assignment peer_assignment(de::agentCount());
     std::copy(msg->drone_to_slot.begin(), msg->drone_to_slot.end(), peer_assignment.begin());
-    if (msg->assignment_epoch &&
-        (!de::validAssignment(peer_assignment) ||
-         msg->assignment_digest != de::fullAssignmentSignature(peer_assignment) ||
-         msg->slot_id != static_cast<unsigned>(peer_assignment[msg->drone_id]))) return;
+    if (!de::validAssignment(peer_assignment) ||
+        msg->slot_id != static_cast<unsigned>(peer_assignment[msg->drone_id])) return;
+    if (msg->assignment_epoch) {
+      if (msg->assignment_digest != de::fullAssignmentSignature(peer_assignment)) return;
+    } else if (msg->assignment_digest != 0 ||
+               peer_assignment != de::assignmentFromVersions(msg->assignment_versions)) return;
     const double now = ros::Time::now().toSec();
     auto& lease = state_leases_[msg->drone_id];
     if (lease.accept(msg->session, msg->sequence, msg->header.stamp.toSec(),
@@ -213,7 +278,9 @@ class Agent {
         msg->startup_ready);
   }
   void evidence(const ego_planner::FormationEdgeEvidence::ConstPtr& msg) {
-    if (msg->assignment_epoch != assignment_epoch_ ||
+    if (msg->formation_digest != de::formationDigest() ||
+        msg->assignment_versions.size() != static_cast<size_t>(de::columnCount()) ||
+        msg->assignment_epoch != assignment_epoch_ ||
         msg->assignment_digest != (assignment_epoch_ ? de::fullAssignmentSignature(assignment_) : 0) ||
         !de::edgeVersionsMatch(msg->edge_index, versions_,
                                msg->assignment_versions) ||
@@ -237,22 +304,39 @@ class Agent {
   void freeCloud(const sensor_msgs::PointCloud2::ConstPtr& msg) {
     if (msg->header.frame_id != map_frame_ || msg->header.stamp <= free_stamp_ ||
         msg->header.stamp > ros::Time::now()+ros::Duration(0.05)) return;
-    pcl::fromROSMsg(*msg, free_);
+    if (!free_geometry_message_ || !sameCloudGeometry(*free_geometry_message_, *msg)) {
+      pcl::fromROSMsg(*msg, free_);
+      ++free_geometry_generation_;
+    }
+    free_geometry_message_ = msg;
     free_stamp_ = msg->header.stamp;
     rebuild();
   }
   void inflatedCloud(const sensor_msgs::PointCloud2::ConstPtr& msg) {
     if (msg->header.frame_id != map_frame_ || msg->header.stamp <= inflated_stamp_ ||
         msg->header.stamp > ros::Time::now()+ros::Duration(0.05)) return;
-    pcl::fromROSMsg(*msg, inflated_);
+    if (!inflated_geometry_message_ || !sameCloudGeometry(*inflated_geometry_message_, *msg)) {
+      pcl::fromROSMsg(*msg, inflated_);
+      ++inflated_geometry_generation_;
+    }
+    inflated_geometry_message_ = msg;
     inflated_stamp_ = msg->header.stamp;
     rebuild();
   }
   void rebuild() {
     // Both layers must refer to the same local sensor update.
     if (occupied_stamp_.isZero() || occupied_stamp_ != free_stamp_ || inflated_stamp_.isZero()) return;
-    field_.reset(new VoxelObstacleField(inflated_, planner_layout_, free_,
-                 starconvex_adapter::VoxelGridLayout(resolution_), planner_size_));
+    if (!field_ || field_free_generation_ != free_geometry_generation_ ||
+        field_inflated_generation_ != inflated_geometry_generation_) {
+      field_.reset(new VoxelObstacleField(inflated_, planner_layout_, free_,
+                   starconvex_adapter::VoxelGridLayout(resolution_), planner_size_));
+      field_free_generation_ = free_geometry_generation_;
+      field_inflated_generation_ = inflated_geometry_generation_;
+      ++field_geometry_generation_;
+    }
+    // Reusing identical contents never renews a cached sensor sample. Freshness
+    // still comes from actual, paired observed frames and the planner's source
+    // timestamp, including when one of those sources has stopped advancing.
     field_stamp_ = std::min(occupied_stamp_,inflated_stamp_);
   }
   bool corridor(const Vec3& a, const Vec3& b) const {
@@ -260,9 +344,28 @@ class Agent {
     // Traverse the centerline's cells without adding another 0.1 m band.
     return field_->knownFreeSegment(a,b);
   }
-  double overlap(const Vec3& a, const Vec3& b) const {
-    OriginalStarSpace first(a, starconvex_adapter::generateBoundaryCloud(a, *field_, geometry_));
-    OriginalStarSpace second(b, starconvex_adapter::generateBoundaryCloud(b, *field_, geometry_));
+  double overlap(int edge, int first_id, int second_id,
+                 std::vector<std::unique_ptr<OriginalStarSpace>>& hulls) {
+    const Vec3& a = positions_[first_id];
+    const Vec3& b = positions_[second_id];
+    auto& cached = overlap_cache_[edge];
+    // Freshness is checked by evaluate() before reaching here. The score is a
+    // pure function of the exact field contents and the two endpoint poses;
+    // identical new sensor frames need not repeat an identical calculation.
+    if (cached.valid && cached.field_generation == field_geometry_generation_ &&
+        cached.first_id == first_id && cached.second_id == second_id &&
+        cached.first.x == a.x && cached.first.y == a.y && cached.first.z == a.z &&
+        cached.second.x == b.x && cached.second.y == b.y && cached.second.z == b.z)
+      return cached.score;
+    const auto hull = [this, &hulls](int id) -> OriginalStarSpace& {
+      if (!hulls[id])
+        hulls[id].reset(new OriginalStarSpace(
+            positions_[id], starconvex_adapter::generateBoundaryCloud(
+                positions_[id], *field_, geometry_)));
+      return *hulls[id];
+    };
+    auto& first = hull(first_id);
+    auto& second = hull(second_id);
     unsigned va = 0, vb = 0, intersection = 0;
     const double z0 = std::max(geometry_.frontier_floor, std::min(a.z,b.z)-0.5);
     const double z1 = std::min(geometry_.frontier_roof, std::max(a.z,b.z)+0.5);
@@ -274,10 +377,16 @@ class Agent {
           const bool ia = first.contains(p), ib = second.contains(p);
           va += ia; vb += ib; intersection += ia && ib;
         }
-    return std::min(va,vb) ? static_cast<double>(intersection)/std::min(va,vb) : 0;
+    const double score = std::min(va,vb)
+        ? static_cast<double>(intersection)/std::min(va,vb) : 0;
+    cached.valid = true;
+    cached.field_generation = field_geometry_generation_;
+    cached.first_id = first_id; cached.second_id = second_id;
+    cached.first = a; cached.second = b; cached.score = score;
+    return score;
   }
   de::AllAgentAssignment::View assignmentView() const {
-    de::AllAgentAssignment::View view{};
+    de::AllAgentAssignment::View view(de::agentCount());
     const auto now = ros::Time::now();
     for (int id = 0; id < de::kAgents; ++id) {
       auto& m = view[id];
@@ -301,11 +410,14 @@ class Agent {
     // Arbitrary permutations can change every physical endpoint. Never reuse
     // old-column evidence or an approach timer under a new assignment epoch.
     table_.clear();
-    kept_.fill(false); weak_reconnected_.fill(false);
-    visibility_reconnected_.fill(false); candidate_weak_.fill(false);
+    std::fill(kept_.begin(), kept_.end(), false);
+    std::fill(weak_reconnected_.begin(), weak_reconnected_.end(), false);
+    std::fill(visibility_reconnected_.begin(), visibility_reconnected_.end(), false);
+    std::fill(candidate_weak_.begin(), candidate_weak_.end(), false);
     for (auto& approach : approach_) approach.reset();
-    ready_since_.fill(ros::Time()); cut_since_.fill(ros::Time());
-    normal_since_.fill(ros::Time());
+    std::fill(ready_since_.begin(), ready_since_.end(), ros::Time());
+    std::fill(cut_since_.begin(), cut_since_.end(), ros::Time());
+    std::fill(normal_since_.begin(), normal_since_.end(), ros::Time());
     own_goal_valid_ = false;
     last_evaluation_ = ros::Time();
     last_swap_ = ros::Time::now();
@@ -316,7 +428,7 @@ class Agent {
     uint32_t base_version = 0;
     double gain = 0.0;
     ros::Time started, last_sent;
-    std::array<de::Lease, de::kAgents> acks{};
+    std::vector<de::Lease> acks = std::vector<de::Lease>(de::agentCount());
   };
   bool swapReady(int column, int front, int rear, double* gain) const {
     const ros::Time now = ros::Time::now();
@@ -353,6 +465,7 @@ class Agent {
   void publishSwap(int column, int phase, const PendingSwap& tx) {
     ego_planner::FormationSlotSwap message;
     message.header.stamp = ros::Time::now();
+    message.formation_digest = de::formationDigest();
     message.sender_session = session_;
     message.sequence = ++swap_sequence_;
     message.sender_id = id_;
@@ -393,10 +506,13 @@ class Agent {
              id_, column, versions_[column], tx.front, tx.rear, tx.gain);
   }
   void swapMessage(const ego_planner::FormationSlotSwap::ConstPtr& msg) {
-    if (!swap_enabled_ || swap_scope_ != "column") return;
+    if (!swap_enabled_ || swap_scope_ != "column" ||
+        msg->formation_digest != de::formationDigest()) return;
     const ros::Time now = ros::Time::now();
-    if (msg->sender_id >= de::kAgents || msg->column >= de::kColumns ||
-        msg->front_drone >= de::kAgents || msg->rear_drone >= de::kAgents ||
+    if (msg->sender_id >= static_cast<unsigned>(de::agentCount()) ||
+        msg->column >= static_cast<unsigned>(de::columnCount()) ||
+        msg->front_drone >= static_cast<unsigned>(de::agentCount()) ||
+        msg->rear_drone >= static_cast<unsigned>(de::agentCount()) ||
         msg->transaction_id == 0 || msg->proposer_session == 0 ||
         !std::isfinite(msg->gain) ||
         (msg->phase != msg->COMMIT && msg->gain < swap_gain_min_) ||
@@ -534,6 +650,9 @@ class Agent {
     const bool local_ready = field_ && now >= field_stamp_ &&
         (now-field_stamp_).toSec() <= map_timeout_ &&
         state_leases_[id_].fresh(now.toSec(), ttl_);
+    // All work in this callback sees one field/pose snapshot. Reuse its hulls
+    // between incident edges, then discard them before accepting any new input.
+    std::vector<std::unique_ptr<OriginalStarSpace>> hulls(de::agentCount());
     for (int edge = 0; edge < de::kEdges; ++edge) {
       const auto& pair = de::edges()[edge];
       const int first = de::owner(assignment_, pair[0]);
@@ -541,6 +660,7 @@ class Agent {
       if (first != id_ && second != id_) continue;
       const int peer = first == id_ ? second : first;
       double score = 0, visibility = 0, distance = 0;
+      bool score_computed = false;
       bool approaching = false;
       bool safe = local_ready && state_leases_[peer].fresh(now.toSec(), ttl_);
       if (safe) {
@@ -557,7 +677,12 @@ class Agent {
       if (safe) {
         try {
           visibility = corridor(positions_[id_], positions_[peer]) ? 1.0 : 0.0;
-          if (visibility > 0) score = overlap(positions_[id_], positions_[peer]);
+          if (visibility > 0 && de::needsOverlapScore(
+                  kept_[edge], weak_reconnected_[edge],
+                  visibility_reconnected_[edge], startup_ready_)) {
+            score = overlap(edge, id_, peer, hulls);
+            score_computed = true;
+          }
           safe = de::localEdgeEvidenceSafe(
               kept_[edge], weak_reconnected_[edge] ||
                                visibility_reconnected_[edge],
@@ -612,15 +737,15 @@ class Agent {
         }
       } else if (weak_reconnected_[edge]) {
         normal_since_[edge] = ros::Time();
-      } else if (visibility_reconnected_[edge] && score >= split_score_) {
+      } else if (visibility_reconnected_[edge] && score_computed && score >= split_score_) {
         visibility_reconnected_[edge] = false;
       }
       ego_planner::FormationEdgeEvidence value;
       value.header.stamp = now;
+      value.formation_digest = de::formationDigest();
       value.session = session_;
       value.sequence = ++edge_sequence_;
-      std::copy(versions_.begin(), versions_.end(),
-                value.assignment_versions.begin());
+      value.assignment_versions.assign(versions_.begin(), versions_.end());
       value.assignment_generation = de::assignmentSignature(versions_);
       value.assignment_epoch = assignment_epoch_;
       value.assignment_digest = assignment_epoch_ ? de::fullAssignmentSignature(assignment_) : 0;
@@ -629,6 +754,8 @@ class Agent {
       value.peer_id = peer;
       value.decision = kept_[edge] ? value.KEEP : value.CUT;
       value.weak_recovery = kept_[edge] && weak_reconnected_[edge];
+      // Zero is also the diagnostic placeholder when this state does not use
+      // overlap. It must never be mistaken for a measured recovery score.
       value.score = score; value.visibility = visibility; value.distance = distance;
       table_.updateAt(edge, id_, peer, assignment_, session_, value.sequence,
                       now.toSec(), now.toSec(), ttl_, kept_[edge],
@@ -637,14 +764,16 @@ class Agent {
     }
   }
   void tick(const ros::TimerEvent&) {
-    const ros::Time now = ros::Time::now();
+    ros::Time now = ros::Time::now();
     if (last_evaluation_.isZero() || (now-last_evaluation_).toSec() >= 0.30) {
       evaluate(now);
+      // CPU-heavy geometry must not make expired endpoint leases appear fresh
+      // by checking them against the callback's earlier start timestamp.
+      now = ros::Time::now();
       last_evaluation_ = now;
     }
     const uint32_t mask_before_swap = table_.mask(now.toSec(), ttl_);
-    constexpr uint32_t full_mask =
-        (uint32_t{1} << de::kEdges) - uint32_t{1};
+    const uint32_t full_mask = de::fullMask();
     if (!local_startup_ready_ && mask_before_swap == full_mask) {
       local_startup_ready_ = true;
       ROS_INFO("Distributed startup: local full-edge evidence is ready");
@@ -656,7 +785,7 @@ class Agent {
       if (all_ready) {
         startup_ready_ = true;
         ROS_INFO("Distributed startup barrier passed for all %d agents",
-                 de::kAgents);
+                 de::agentCount());
       }
     }
     if (startup_ready_) {
@@ -666,22 +795,24 @@ class Agent {
     }
     if (reassignment_) reassignment_->tick(startup_ready_ && swap_armed_);
     // applySwap() invalidates incident evidence. Publish the new assignment
-    // only with a mask recomputed from that same post-swap edge table.
+    // only with a mask recomputed from that same post-swap edge table. Refresh
+    // time after assignment work as well, so expired leases cannot be renewed
+    // by attaching a later command timestamp to an earlier mask check.
+    now = ros::Time::now();
     const uint32_t mask = table_.mask(now.toSec(), ttl_);
     ego_planner::FormationTopologyCommand command;
-    command.header.stamp = ros::Time::now();
+    command.header.stamp = now;
+    command.formation_digest = de::formationDigest();
     command.epoch = command.header.stamp.toNSec();
     // Always use the optimizer's relative-edge branch, including a fully connected graph.
     command.mode = command.SPLIT;
     command.edge_count = de::kEdges;
     command.edge_keep_mask = mask;
     command.weak_edge_mask = table_.weakMask(now.toSec(), ttl_);
-    std::copy(versions_.begin(), versions_.end(),
-              command.assignment_versions.begin());
+    command.assignment_versions.assign(versions_.begin(), versions_.end());
     command.assignment_epoch = assignment_epoch_;
     command.assignment_digest = assignment_epoch_ ? de::fullAssignmentSignature(assignment_) : 0;
-    for (int id = 0; id < de::kAgents; ++id)
-      command.drone_to_slot[id] = assignment_[id];
+    command.drone_to_slot.assign(assignment_.begin(), assignment_.end());
     command.components = de::components(command.edge_keep_mask, assignment_);
     const bool weak_recovery = command.weak_edge_mask != 0;
     command.formation_scale = weak_recovery ? weak_formation_scale_
@@ -693,7 +824,7 @@ class Agent {
   }
   ros::NodeHandle nh_;
   ros::Subscriber odom_sub_, state_sub_, evidence_sub_, swap_sub_, occupied_sub_, free_sub_, inflated_sub_;
-  std::array<ros::Subscriber, de::kAgents> applied_subs_{};
+  std::vector<ros::Subscriber> applied_subs_;
   ros::Publisher state_pub_, edge_pub_, command_pub_, swap_pub_;
   ros::Timer timer_;
   int id_;
@@ -714,32 +845,39 @@ class Agent {
   uint64_t session_, state_sequence_{0}, edge_sequence_{0}, swap_sequence_{0},
       transaction_sequence_{0};
   de::Assignment assignment_{};
-  std::array<uint32_t, de::kColumns> versions_{};
-  std::array<std::array<uint32_t, de::kColumns>, de::kAgents> peer_versions_{};
-  std::array<std::array<uint32_t, de::kColumns>, de::kAgents> applied_versions_{};
-  std::array<ros::Time, de::kAgents> applied_stamps_{};
-  std::array<uint64_t, de::kAgents> peer_epochs_{}, peer_digests_{}, applied_epochs_{}, applied_digests_{};
-  std::array<de::Assignment, de::kAgents> peer_assignments_{}, applied_assignments_{};
-  std::array<std::array<double, 3>, de::kAgents> velocities_{}, goals_{};
-  std::array<bool, de::kAgents> goal_valid_{};
+  std::vector<uint32_t> versions_;
+  std::vector<std::vector<uint32_t>> peer_versions_, applied_versions_;
+  std::vector<ros::Time> applied_stamps_;
+  std::vector<uint64_t> peer_epochs_, peer_digests_, applied_epochs_, applied_digests_;
+  std::vector<de::Assignment> peer_assignments_, applied_assignments_;
+  std::vector<std::array<double, 3>> velocities_, goals_;
+  std::vector<bool> goal_valid_;
   std::array<double, 3> own_goal_{};
   bool own_goal_valid_{false};
-  std::array<de::Lease, de::kAgents> swap_writers_{};
-  std::array<PendingSwap, de::kColumns> pending_{};
-  std::array<std::vector<PendingSwap>, de::kColumns> history_{};
-  std::array<ros::Time, de::kColumns> candidate_since_{};
+  std::vector<de::Lease> swap_writers_;
+  std::vector<PendingSwap> pending_;
+  std::vector<std::vector<PendingSwap>> history_;
+  std::vector<ros::Time> candidate_since_;
   ros::Time last_swap_;
-  std::array<Vec3, de::kAgents> positions_{};
-  std::array<de::Lease, de::kAgents> state_leases_{};
-  std::array<de::Lease, de::kAgents> startup_leases_{};
+  std::vector<Vec3> positions_;
+  std::vector<de::Lease> state_leases_, startup_leases_;
   de::EdgeTable table_;
-  std::array<bool, de::kEdges> kept_{};
-  std::array<bool, de::kEdges> weak_reconnected_{};
-  std::array<bool, de::kEdges> visibility_reconnected_{};
-  std::array<bool, de::kEdges> candidate_weak_{};
-  std::array<de::WeakRecoveryApproach, de::kEdges> approach_{};
-  std::array<ros::Time, de::kEdges> ready_since_{}, cut_since_{}, normal_since_{};
+  std::vector<bool> kept_, weak_reconnected_, visibility_reconnected_, candidate_weak_;
+  std::vector<de::WeakRecoveryApproach> approach_;
+  struct OverlapCache {
+    bool valid{false};
+    uint64_t field_generation{0};
+    int first_id{-1}, second_id{-1};
+    Vec3 first, second;
+    double score{0};
+  };
+  std::vector<OverlapCache> overlap_cache_;
+  std::vector<ros::Time> ready_since_, cut_since_, normal_since_;
   pcl::PointCloud<pcl::PointXYZ> free_, inflated_;
+  sensor_msgs::PointCloud2::ConstPtr free_geometry_message_, inflated_geometry_message_;
+  uint64_t free_geometry_generation_{0}, inflated_geometry_generation_{0};
+  uint64_t field_free_generation_{0}, field_inflated_generation_{0};
+  uint64_t field_geometry_generation_{0};
   ros::Time occupied_stamp_, free_stamp_, inflated_stamp_, field_stamp_, last_evaluation_;
   std::unique_ptr<VoxelObstacleField> field_;
   starconvex_adapter::GeometryOptions geometry_;

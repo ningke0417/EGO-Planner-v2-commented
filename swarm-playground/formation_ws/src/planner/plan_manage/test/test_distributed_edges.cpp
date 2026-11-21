@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <limits>
+#include <set>
 #include <plan_manage/distributed_edges.h>
 using namespace ego_planner::distributed;
 
@@ -126,7 +127,7 @@ TEST(DistributedEdges, IndependentTablesConvergeDespiteDeliveryOrder) {
 
 TEST(DistributedEdges, PairSwapPreservesPermutationAndRemapsOnlyIncidentEdges) {
   Assignment assignment = identityAssignment();
-  std::array<uint32_t, kColumns> versions{};
+  std::vector<uint32_t> versions(columnCount(), 0);
   EXPECT_TRUE(swapColumn(&assignment, 1));
   ++versions[1];
   EXPECT_TRUE(validAssignment(assignment));
@@ -146,9 +147,9 @@ TEST(DistributedEdges, PairSwapPreservesPermutationAndRemapsOnlyIncidentEdges) {
 }
 
 TEST(DistributedEdges, EvidenceChecksOnlyVersionsOfItsLogicalEndpoints) {
-  std::array<uint32_t, kColumns> local{{0, 1, 0, 0}};
-  std::array<uint32_t, kColumns> same_edge{{0, 1, 7, 0}};
-  std::array<uint32_t, kColumns> stale_edge{{0, 0, 7, 0}};
+  std::vector<uint32_t> local{{0, 1, 0, 0}};
+  std::vector<uint32_t> same_edge{{0, 1, 7, 0}};
+  std::vector<uint32_t> stale_edge{{0, 0, 7, 0}};
   EXPECT_TRUE(edgeVersionsMatch(0, local, same_edge));
   EXPECT_FALSE(edgeVersionsMatch(0, local, stale_edge));
   EXPECT_TRUE(edgeVersionsMatch(9, local, stale_edge));
@@ -158,4 +159,78 @@ TEST(DistributedEdges, InvertedColumnHasPositiveSwapGain) {
   // Original front drone at x=-0.05, rear drone at x=+0.05.
   EXPECT_NEAR(0.2, columnSwapGain(-0.05, 0, 0.05, 0, 1, 0), 1e-9);
   EXPECT_LT(columnSwapGain(0.5, 0, -0.5, 0, 1, 0), 0);
+}
+
+TEST(DistributedEdges, RuntimeRectanglesShareCanonicalSlotsAndEndpointLeases) {
+  const auto saved = formation();
+  struct Restore { FormationDescription saved; ~Restore() { formationStorage() = saved; } } restore{saved};
+  const std::array<std::array<int, 3>, 4> cases{{{{2, 3, 7}}, {{2, 4, 10}},
+                                               {{3, 4, 17}}, {{4, 4, 24}}}};
+  for (const auto& shape : cases) {
+    configureFormation(shape[0], shape[1]);
+    const int count = shape[0] * shape[1];
+    ASSERT_EQ(count, agentCount());
+    ASSERT_EQ(shape[2], edgeCount());
+    ASSERT_EQ(static_cast<size_t>(count), formation().slot_offsets.size());
+    EXPECT_DOUBLE_EQ(0.5 * (shape[0] - 1), formation().slot_offsets.front()[0]);
+    EXPECT_DOUBLE_EQ(-0.5 * (shape[1] - 1), formation().slot_offsets.front()[1]);
+    EXPECT_DOUBLE_EQ(-formation().slot_offsets.front()[0], formation().slot_offsets.back()[0]);
+    EXPECT_DOUBLE_EQ(-formation().slot_offsets.front()[1], formation().slot_offsets.back()[1]);
+    std::set<std::array<int, 2>> unique;
+    EdgeTable table;
+    auto assignment = identityAssignment();
+    std::reverse(assignment.begin(), assignment.end());
+    for (int edge = 0; edge < edgeCount(); ++edge) {
+      const auto pair = edges()[edge];
+      ASSERT_GE(pair[0], 0); ASSERT_LT(pair[1], count);
+      ASSERT_TRUE(unique.insert(pair).second);
+      const int a = owner(assignment, pair[0]), b = owner(assignment, pair[1]);
+      EXPECT_TRUE(table.updateAt(edge, a, b, assignment, a + 1, 1, 10, 10, 1, true));
+      EXPECT_TRUE(table.updateAt(edge, b, a, assignment, b + 1, 1, 10, 10, 1, true));
+    }
+    EXPECT_EQ(fullMask(), table.mask(10, 1));
+    EXPECT_EQ(0u, table.mask(11.1, 1));
+    const auto connected = components(fullMask(), assignment);
+    EXPECT_EQ(1, static_cast<int>(std::count(connected.begin(), connected.end(), '{')));
+    assignment.pop_back();
+    EXPECT_FALSE(validAssignment(assignment));
+  }
+}
+
+TEST(DistributedEdges, ConfigurationDigestSeparatesShapesAndSpacing) {
+  const auto saved = formation();
+  struct Restore { FormationDescription saved; ~Restore() { formationStorage() = saved; } } restore{saved};
+  configureFormation(2, 4);
+  const auto standard = formationDigest();
+  configureFormation(4, 2);
+  EXPECT_NE(standard, formationDigest());
+  configureFormation(2, 4, 1.0, 1.1);
+  EXPECT_NE(standard, formationDigest());
+  configureFormation(2, 4);
+  EXPECT_EQ(standard, formationDigest());
+  EXPECT_THROW(configureFormation(0, 4), std::invalid_argument);
+  EXPECT_THROW(configureFormation(5, 4), std::invalid_argument);
+  EXPECT_THROW(configureFormation(2, 4, 0.0, 1.0), std::invalid_argument);
+  EXPECT_EQ(standard, formationDigest());
+}
+
+TEST(DistributedEdges, ReconnectAndWeakEvidenceDoNotNeedOverlapWork) {
+  EXPECT_FALSE(needsOverlapScore(false, false, false, false));
+  EXPECT_FALSE(needsOverlapScore(false, false, false, true));
+  EXPECT_FALSE(needsOverlapScore(true, true, false, true));
+  EXPECT_TRUE(localEdgeEvidenceSafe(false, false, 2.5, 1.0, 0.0,
+                                    1.8, 4.0, 0.34));
+  EXPECT_TRUE(localEdgeEvidenceSafe(true, true, 2.5, 1.0, 0.0,
+                                    4.0, 4.0, 0.34));
+}
+
+TEST(DistributedEdges, StartupDefersOnlyExistingVisibilityExemption) {
+  EXPECT_FALSE(needsOverlapScore(true, false, true, false));
+  EXPECT_TRUE(needsOverlapScore(true, false, true, true));
+  EXPECT_TRUE(needsOverlapScore(true, false, false, false));
+  EXPECT_TRUE(needsOverlapScore(true, false, false, true));
+  EXPECT_TRUE(localEdgeEvidenceSafe(true, true, 1.0, 1.0, 0.0,
+                                    1.8, 4.0, 0.34));
+  EXPECT_FALSE(localEdgeEvidenceSafe(true, false, 1.0, 1.0, 0.0,
+                                     1.8, 4.0, 0.34));
 }

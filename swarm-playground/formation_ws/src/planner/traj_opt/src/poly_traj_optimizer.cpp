@@ -1,4 +1,5 @@
 #include "optimizer/poly_traj_optimizer.h"
+#include <traj_utils/formation_grid.h>
 // using namespace std;
 
 namespace ego_planner
@@ -2005,6 +2006,11 @@ namespace ego_planner
     nh.param("optimization/max_acc", max_acc_, -1.0);
 
     nh.param("formation/num", formation_num_, -1);
+    int formation_rows, formation_columns;
+    nh.param("formation/rows", formation_rows, 2);
+    nh.param("formation/columns", formation_columns, formation_num_ == 6 ? 3 : 4);
+    if (formation_rows * formation_columns == formation_num_)
+      formation_slot_edges_ = rectangularFormationEdges(formation_rows, formation_columns);
     nh.param("formation/split_side_guidance_enabled",
              split_side_guidance_enabled_, false);
     nh.param("formation/split_side_guidance_weight",
@@ -2038,7 +2044,9 @@ namespace ego_planner
     for (int i = 0; i < formation_num_; i++)
     {
       std::vector<double> pos;
-      nh.getParam("formation/drone" + to_string(i), pos);
+      if (!nh.getParam("formation/drone" + to_string(i), pos) || pos.size() != 3 ||
+          !std::all_of(pos.begin(), pos.end(), [](double value) { return std::isfinite(value); }))
+        throw std::runtime_error("missing or invalid formation slot offsets");
       formation_.col(i) << pos[0], pos[1], pos[2];
     }
     canonical_formation_ = formation_;
@@ -2111,16 +2119,8 @@ namespace ego_planner
         static_cast<int>(assignment.size()) != formation_num_)
       return false;
 
-    std::vector<std::array<int, 2>> slot_edges;
-    if (formation_num_ == 8)
-      slot_edges = {{{0, 1}}, {{1, 2}}, {{2, 3}},
-                    {{4, 5}}, {{5, 6}}, {{6, 7}},
-                    {{0, 4}}, {{1, 5}}, {{2, 6}}, {{3, 7}}};
-    else if (formation_num_ == 6)
-      slot_edges = {{{0, 1}}, {{1, 2}}, {{3, 4}}, {{4, 5}},
-                    {{0, 3}}, {{1, 4}}, {{2, 5}}};
-    else
-      return false;
+    const auto &slot_edges = formation_slot_edges_;
+    if (slot_edges.empty()) return false;
     if (edge_count != slot_edges.size()) return false;
 
     std::vector<int> drone_for_slot(formation_num_, -1);

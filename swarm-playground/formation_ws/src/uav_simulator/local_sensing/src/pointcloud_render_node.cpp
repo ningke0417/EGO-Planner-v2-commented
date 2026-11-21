@@ -145,7 +145,9 @@ void renderSensedPoints(const ros::TimerEvent& event) {
   _local_map.is_dense = true;
 
   pcl::toROSMsg(_local_map, _local_map_pcd);
-  _local_map_pcd.header.frame_id = "map";
+  // These points remain in the odometry/world coordinates used for sensing.
+  _local_map_pcd.header.frame_id =
+      _odom.header.frame_id.empty() ? "world" : _odom.header.frame_id;
   // This simulated measurement uses the latest odometry pose. An empty cloud
   // is still a valid scan in free space and must carry its acquisition time.
   _local_map_pcd.header.stamp = _odom.header.stamp;

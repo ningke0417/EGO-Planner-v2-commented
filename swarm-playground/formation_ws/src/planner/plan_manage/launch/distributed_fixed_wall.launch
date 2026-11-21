@@ -1,0 +1,63 @@
+<launch>
+    <!-- One shared distributed implementation; rows and columns select the formation. -->
+    <arg name="formation_rows" default="2"/>
+    <arg name="formation_columns" default="4"/>
+    <arg name="row_spacing" default="1.0"/>
+    <arg name="column_spacing" default="1.0"/>
+    <arg name="rviz" default="true"/>
+    <arg name="swap_enabled" default="false"/>
+    <arg name="swap_scope" default="all"/>
+    <arg name="max_vel" default="0.5"/>
+    <arg name="map_size_x" default="24.0"/>
+    <arg name="map_size_y" default="14.0"/>
+    <arg name="map_size_z" default="3.0"/>
+    <arg name="start_x" default="-6.0"/>
+    <arg name="goal_x" default="10.0"/>
+    <arg name="altitude" default="1.5"/>
+    <arg name="odom_topic" default="visual_slam/odom"/>
+    <arg name="safety_distance" default="0.2"/>
+    <arg name="formation_weight" default="200.0"/>
+    <arg name="weak_reconnect_distance" default="4.0"/>
+    <arg name="distributed_startup_timeout" default="60.0"/>
+    <arg name="wall_x" default="-2.0"/>
+    <arg name="wall_y" default="0.0"/>
+    <arg name="wall_size_x" default="0.5"/>
+    <arg name="wall_size_y" default="6.0"/>
+    <arg name="second_wall_x" default="6.5"/>
+    <arg name="second_wall_size_x" default="0.5"/>
+    <arg name="second_wall_total_size_y" default="10.0"/>
+    <arg name="second_wall_gap_size_y" default="1.8"/>
+
+    <node pkg="ego_planner" type="launch_distributed_formation.py"
+          name="distributed_formation_launcher" output="screen" required="true">
+        <param name="scene" value="fixed_wall"/>
+        <param name="formation_rows" value="$(arg formation_rows)"/>
+        <param name="formation_columns" value="$(arg formation_columns)"/>
+        <param name="row_spacing" value="$(arg row_spacing)"/>
+        <param name="column_spacing" value="$(arg column_spacing)"/>
+        <param name="rviz" value="$(arg rviz)"/>
+        <param name="swap_enabled" value="$(arg swap_enabled)"/>
+        <param name="swap_scope" value="$(arg swap_scope)"/>
+        <param name="max_vel" value="$(arg max_vel)"/>
+        <param name="map_size_x" value="$(arg map_size_x)"/>
+        <param name="map_size_y" value="$(arg map_size_y)"/>
+        <param name="map_size_z" value="$(arg map_size_z)"/>
+        <param name="start_x" value="$(arg start_x)"/>
+        <param name="goal_x" value="$(arg goal_x)"/>
+        <param name="altitude" value="$(arg altitude)"/>
+        <param name="odom_topic" value="$(arg odom_topic)"/>
+        <param name="safety_distance" value="$(arg safety_distance)"/>
+        <param name="formation_weight" value="$(arg formation_weight)"/>
+        <param name="weak_reconnect_distance" value="$(arg weak_reconnect_distance)"/>
+        <param name="distributed_startup_timeout" value="$(arg distributed_startup_timeout)"/>
+        <param name="wall_x" value="$(arg wall_x)"/>
+        <param name="wall_y" value="$(arg wall_y)"/>
+        <param name="wall_size_x" value="$(arg wall_size_x)"/>
+        <param name="wall_size_y" value="$(arg wall_size_y)"/>
+        <param name="second_wall_x" value="$(arg second_wall_x)"/>
+        <param name="second_wall_size_x" value="$(arg second_wall_size_x)"/>
+        <param name="second_wall_total_size_y" value="$(arg second_wall_total_size_y)"/>
+        <param name="second_wall_gap_size_y" value="$(arg second_wall_gap_size_y)"/>
+    </node>
+</launch>
+

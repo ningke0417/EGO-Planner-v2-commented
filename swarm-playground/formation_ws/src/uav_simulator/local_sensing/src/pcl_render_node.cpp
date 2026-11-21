@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <string>
 //include ros dep.
 #include <ros/ros.h>
 #include <message_filters/subscriber.h>
@@ -69,6 +70,7 @@ Matrix4d cam02body;
 Matrix4d cam2world;
 Eigen::Quaterniond cam2world_quat;
 nav_msgs::Odometry _odom;
+std::string world_frame_id = "world";
 
 double sensing_horizon, sensing_rate, estimation_rate; 
 double _x_size, _y_size, _z_size;
@@ -108,6 +110,7 @@ void rcvOdometryCallbck(const nav_msgs::Odometry& odom)
     return;*/
   has_odom = true;
   _odom = odom;
+  world_frame_id = odom.header.frame_id.empty() ? "world" : odom.header.frame_id;
   Matrix4d Pose_receive = Matrix4d::Identity();
 
   Eigen::Vector3d request_position;
@@ -148,7 +151,7 @@ void pubCameraPose(const ros::TimerEvent & event)
   //cout<<"pub cam pose"
   geometry_msgs::PoseStamped camera_pose;
   camera_pose.header = _odom.header;
-  camera_pose.header.frame_id = "/map";
+  camera_pose.header.frame_id = world_frame_id;
   camera_pose.pose.position.x = cam2world(0,3);
   camera_pose.pose.position.y = cam2world(1,3);
   camera_pose.pose.position.z = cam2world(2,3);
@@ -262,7 +265,7 @@ void render_pcl_world()
   localMap.is_dense = true;
 
   pcl::toROSMsg(localMap, local_map_pcl);
-  local_map_pcl.header.frame_id  = "/map";
+  local_map_pcl.header.frame_id  = world_frame_id;
   local_map_pcl.header.stamp     = last_odom_stamp;
 
   pub_pcl_wolrd.publish(local_map_pcl);

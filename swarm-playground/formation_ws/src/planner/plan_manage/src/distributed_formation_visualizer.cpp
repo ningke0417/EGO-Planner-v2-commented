@@ -3,6 +3,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include <ros/ros.h>
 #include <nav_msgs/Odometry.h>
 #include <ego_planner/FormationTopologyAck.h>
@@ -17,6 +18,16 @@ using Marker = visualization_msgs::Marker;
 class Visualizer {
  public:
   Visualizer() : nh_("~") {
+    int rows, columns;
+    double row_spacing, column_spacing;
+    nh_.param("formation_rows", rows, 2);
+    nh_.param("formation_columns", columns, 4);
+    nh_.param("row_spacing", row_spacing, 1.0);
+    nh_.param("column_spacing", column_spacing, 1.0);
+    topology::configureFormation(rows, columns, row_spacing, column_spacing);
+    state_sub_.resize(topology::agentCount());
+    odom_sub_.resize(topology::agentCount());
+    agents_.resize(topology::agentCount());
     nh_.param<std::string>("odom_topic_suffix", odom_suffix_, "visual_slam/odom");
     nh_.param<std::string>("frame_id", frame_, "world");
     nh_.param("state_timeout", state_timeout_, 1.5);
@@ -35,17 +46,20 @@ class Visualizer {
           [this, id](const ego_planner::FormationTopologyAck::ConstPtr& msg) {
             auto& a = agents_[id];
             if (msg->drone_id != static_cast<unsigned>(id) ||
-                msg->edge_count != topology::kEdges ||
+                msg->formation_digest != topology::formationDigest() ||
+                msg->assignment_versions.size() != static_cast<size_t>(topology::columnCount()) ||
+                msg->drone_to_slot.size() != static_cast<size_t>(topology::agentCount()) ||
+                msg->edge_count != static_cast<uint32_t>(topology::edgeCount()) ||
                 msg->edge_keep_mask >= (1u << topology::kEdges) ||
                 (msg->weak_edge_mask & ~msg->edge_keep_mask) != 0 ||
                 msg->mode != ego_planner::FormationTopologyCommand::SPLIT ||
                 !validStamp(msg->header.stamp, a.state_stamp, state_timeout_))
               return;
-            topology::Assignment assignment{};
+            topology::Assignment assignment(topology::agentCount());
             for (int drone = 0; drone < topology::kAgents; ++drone)
               assignment[drone] = msg->drone_to_slot[drone];
             if (!topology::validAssignment(assignment)) return;
-            std::array<uint32_t, topology::kColumns> versions{};
+            std::vector<uint32_t> versions(topology::columnCount());
             std::copy(msg->assignment_versions.begin(),
                       msg->assignment_versions.end(), versions.begin());
             if (msg->assignment_epoch == 0) {
@@ -92,7 +106,7 @@ class Visualizer {
     uint32_t mask{0};
     uint32_t weak_mask{0};
     topology::Assignment assignment{topology::identityAssignment()};
-    std::array<uint32_t, topology::kColumns> versions{};
+    std::vector<uint32_t> versions = std::vector<uint32_t>(topology::columnCount(), 0);
     uint64_t assignment_epoch{0}, assignment_digest{0};
     ros::Time state_stamp, odom_stamp;
     ros::WallTime state_received, odom_received;
@@ -127,6 +141,27 @@ class Visualizer {
     bool show_labels = false;
     nh_.param("show_edge_labels", show_labels, false);
     visualization_msgs::MarkerArray output;
+    // One common display topic covers every member, including IDs above seven.
+    // Positions are always measured odometry, never inferred slot locations.
+    for (int id = 0; id < topology::agentCount(); ++id) {
+      const auto& agent = agents_[id];
+      Marker body = marker("distributed_agents", id, Marker::SPHERE);
+      Marker label = marker("distributed_agent_labels", id, Marker::TEXT_VIEW_FACING);
+      if (!fresh(agent.odom_stamp, agent.odom_received, odom_timeout_)) {
+        body.action = label.action = Marker::DELETE;
+      } else {
+        body.pose.position = agent.position;
+        body.scale.x = body.scale.y = body.scale.z = 0.18;
+        body.color.r = 0.15; body.color.g = 0.65; body.color.b = 1.0;
+        label.pose.position = agent.position;
+        label.pose.position.z += 0.25;
+        label.scale.z = 0.15;
+        label.color.r = label.color.g = label.color.b = 1.0;
+        label.text = std::to_string(id);
+      }
+      output.markers.push_back(body);
+      output.markers.push_back(label);
+    }
     std::array<int, 5> counts{}; // normal, disagreement, cut, stale, weak
     topology::Assignment assignment = topology::identityAssignment();
     uint64_t assignment_epoch = 0, assignment_digest = 0;
@@ -235,8 +270,8 @@ class Visualizer {
   ros::NodeHandle nh_;
   ros::Publisher pub_;
   ros::Timer timer_;
-  std::array<ros::Subscriber, topology::kAgents> state_sub_, odom_sub_;
-  std::array<Agent, topology::kAgents> agents_{};
+  std::vector<ros::Subscriber> state_sub_, odom_sub_;
+  std::vector<Agent> agents_;
   std::string odom_suffix_, frame_;
   double state_timeout_, odom_timeout_, lifetime_;
 };
