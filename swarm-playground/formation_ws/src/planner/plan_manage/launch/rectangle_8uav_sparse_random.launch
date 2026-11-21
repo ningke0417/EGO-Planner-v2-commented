@@ -1,7 +1,7 @@
 <launch>
     <arg name="rviz" default="true"/>
     <arg name="random_seed" default="17"/>
-    <arg name="small_position_seed" default="-1" doc="-1: original layout; nonnegative: relocate only small obstacles, preserving their sizes"/>
+    <arg name="small_position_seed" default="-1" doc="negative: original layout; nonnegative: independently resample small obstacle positions; matches EGO-Planner-v2-commented"/>
     <arg name="max_vel" default="0.5"/>
     <arg name="map_size_x" default="32.0"/>
     <arg name="map_size_y" default="14.0"/>
@@ -9,7 +9,7 @@
     <arg name="start_x" default="-14.0"/>
     <arg name="goal_x" default="14.0"/>
     <arg name="large_obstacle_count" default="4"/>
-    <arg name="small_obstacle_count" default="6"/>
+    <arg name="small_obstacle_count" default="6" doc="Small blocks only; 0 removes them. Keep random_seed=17 to preserve large, stacked and narrow-gap obstacles."/>
     <arg name="endpoint_clearance" default="3.0"/>
     <arg name="obstacle_separation" default="0.7"/>
     <arg name="goal_side_obstacle_size_y" default="4.0"/>

@@ -131,8 +131,7 @@ int main(int argc, char** argv) {
   std::string frame_id = "world";
 
   private_nh.param("seed", seed, seed);
-  private_nh.param("small_position_seed", small_position_seed,
-                   small_position_seed);
+  private_nh.param("small_position_seed", small_position_seed, small_position_seed);
   private_nh.param("large_obstacle_count", large_count, large_count);
   private_nh.param("small_obstacle_count", small_count, small_count);
   private_nh.param("map_size_y", map_size_y, map_size_y);
@@ -193,7 +192,6 @@ int main(int argc, char** argv) {
   const double course_min_x = std::min(start_x, goal_x) + endpoint_clearance;
   const double course_max_x = std::max(start_x, goal_x) - endpoint_clearance;
   const bool invalid =
-      small_position_seed < -1 ||
       large_count < 0 || small_count < 0 || map_size_y <= 0.0 ||
       endpoint_clearance < 0.0 || boundary_clearance < 0.0 ||
       obstacle_separation < 0.0 || large_size_x_min <= 0.0 ||
@@ -214,6 +212,11 @@ int main(int argc, char** argv) {
   }
 
   std::mt19937 generator(static_cast<std::mt19937::result_type>(seed));
+  // Negative keeps the original sampling sequence and default map unchanged.
+  // An independent nonnegative seed moves only small boxes. Their dimensions
+  // are sampled once per box, so changing that seed does not change their sizes.
+  std::mt19937 small_position_generator(
+      static_cast<std::mt19937::result_type>(small_position_seed));
   std::vector<Box> boxes;
   std::vector<Box> placement_reservations;
   const int total_count = large_count + small_count;
@@ -274,6 +277,11 @@ int main(int argc, char** argv) {
 
   for (int index = 0; index < total_count; ++index) {
     const bool large = index < large_count;
+    const bool independent_small_position = !large && small_position_seed >= 0;
+    const double fixed_small_size_x = independent_small_position
+        ? sample(&generator, small_size_min, small_size_max) : 0.0;
+    const double fixed_small_size_y = independent_small_position
+        ? sample(&generator, small_size_min, small_size_max) : 0.0;
     bool placed = false;
     for (int attempt = 0; attempt < 1000 && !placed; ++attempt) {
       Box candidate;
@@ -284,6 +292,9 @@ int main(int argc, char** argv) {
             sample(&generator, large_size_x_min, large_size_x_max);
         candidate.size_y =
             sample(&generator, large_size_y_min, large_size_y_max);
+      } else if (independent_small_position) {
+        candidate.size_x = fixed_small_size_x;
+        candidate.size_y = fixed_small_size_y;
       } else {
         candidate.size_x = sample(&generator, small_size_min, small_size_max);
         candidate.size_y = sample(&generator, small_size_min, small_size_max);
@@ -295,10 +306,12 @@ int main(int argc, char** argv) {
           large ? 0.5 * map_size_y - y_margin
                 : std::min(small_center_y_limit,
                            0.5 * map_size_y - y_margin);
-      candidate.center_x = sample(&generator, course_min_x + x_margin,
+      std::mt19937* position_generator = independent_small_position
+          ? &small_position_generator : &generator;
+      candidate.center_x = sample(position_generator, course_min_x + x_margin,
                                   course_max_x - x_margin);
       candidate.center_y =
-          sample(&generator, -center_y_bound, center_y_bound);
+          sample(position_generator, -center_y_bound, center_y_bound);
 
       placed = true;
       for (const Box& existing : boxes) {
@@ -348,44 +361,6 @@ int main(int argc, char** argv) {
           return 1;
         }
         nearest->center_y = goal_side_large_center_y;
-      }
-    }
-  }
-
-  // Generate the original map first so each small obstacle keeps its size.
-  // An optional independent seed then changes only the small-box positions.
-  if (small_position_seed >= 0) {
-    std::mt19937 position_generator(
-        static_cast<std::mt19937::result_type>(small_position_seed));
-    const auto small_begin = boxes.begin() + random_box_begin + large_count;
-    const std::vector<Box> small_boxes(small_begin, boxes.end());
-    boxes.erase(small_begin, boxes.end());
-    for (Box candidate : small_boxes) {
-      const double x_margin = 0.5 * candidate.size_x;
-      const double center_y_bound = std::min(
-          small_center_y_limit,
-          0.5 * map_size_y - boundary_clearance - 0.5 * candidate.size_y);
-      bool placed = false;
-      for (int attempt = 0; attempt < 1000 && !placed; ++attempt) {
-        candidate.center_x = sample(&position_generator,
-                                    course_min_x + x_margin,
-                                    course_max_x - x_margin);
-        candidate.center_y = sample(&position_generator,
-                                    -center_y_bound, center_y_bound);
-        placed = std::none_of(boxes.begin(), boxes.end(),
-            [&](const Box& existing) {
-              return overlaps(candidate, existing, obstacle_separation);
-            }) && std::none_of(placement_reservations.begin(),
-                               placement_reservations.end(),
-            [&](const Box& reservation) {
-              return overlaps(candidate, reservation, obstacle_separation);
-            });
-        if (placed) boxes.push_back(candidate);
-      }
-      if (!placed) {
-        ROS_FATAL_STREAM("Unable to relocate small obstacle; try another "
-                         "small_position_seed or reduce separation.");
-        return 1;
       }
     }
   }
