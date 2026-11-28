@@ -1,5 +1,7 @@
 <launch>
     <arg name="start_x"/>
+    <arg name="formation_config" default="$(find ego_planner)/config/baseline_8uav_rectangle.yaml"/>
+    <arg name="formation_start_z" default="1.5"/>
     <arg name="safety_distance"/>
     <arg name="formation_weight"/>
     <arg name="start_planning"/>
@@ -127,7 +129,7 @@
         <param name="optimization/max_acc" value="$(arg max_acc)" type="double"/>
         <param name="optimization/max_jer" value="$(arg max_jer)" type="double"/>
         <param name="optimization/record_opt" value="true"/>
-        <rosparam command="load" file="$(find ego_planner)/config/baseline_8uav_rectangle.yaml"/>
-        <rosparam subst_value="true" param="formation/start">[$(arg start_x), 0.0, 1.5]</rosparam>
+        <rosparam command="load" file="$(arg formation_config)"/>
+        <rosparam subst_value="true" param="formation/start">[$(arg start_x), 0.0, $(arg formation_start_z)]</rosparam>
     </node>
 </launch>

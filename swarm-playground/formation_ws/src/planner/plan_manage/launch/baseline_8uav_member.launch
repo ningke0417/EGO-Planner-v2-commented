@@ -12,10 +12,14 @@
     <arg name="init_x"/>
     <arg name="init_y"/>
     <arg name="init_z" default="1.5"/>
+    <!-- Shared by the legacy eight-UAV scene and arbitrary rectangular grids. -->
+    <arg name="formation_config" default="$(find ego_planner)/config/baseline_8uav_rectangle.yaml"/>
     <arg name="drone_id"/>
     <arg name="odom_topic"/>
     <arg name="obj_num" value="10"/>
     <include file="$(find ego_planner)/launch/baseline_8uav_advanced.xml">
+        <arg name="formation_config" value="$(arg formation_config)"/>
+        <arg name="formation_start_z" value="$(arg init_z)"/>
         <arg name="start_x" value="$(arg start_x)"/>
         <arg name="safety_distance" value="$(arg safety_distance)"/>
         <arg name="formation_weight" value="$(arg formation_weight)"/>
@@ -42,7 +46,7 @@
         <arg name="point_num" value="1"/>
         <arg name="point0_x" value="$(arg goal_x)"/>
         <arg name="point0_y" value="0.0"/>
-        <arg name="point0_z" value="1.5"/>
+        <arg name="point0_z" value="$(arg init_z)"/>
         <arg name="point1_x" value="30"/>
         <arg name="point1_y" value="0"/>
         <arg name="point1_z" value="1.0"/>

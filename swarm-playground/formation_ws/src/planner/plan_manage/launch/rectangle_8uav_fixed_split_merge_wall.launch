@@ -26,23 +26,17 @@
         <arg name="drone_id" value="999"/>
         <arg name="broadcast_ip" value="127.0.0.255"/>
     </include>
-    <node if="$(eval arg('map_source') == 'split_merge_wall')" pkg="map_generator" type="fixed_split_merge_wall_map" name="fixed_split_merge_wall_map" output="screen" required="true">
-        <remap from="global_cloud" to="/map_generator/global_cloud"/>
-        <param name="first_wall_x" value="$(arg wall_x)"/>
-        <param name="first_wall_y" value="$(arg wall_y)"/>
-        <param name="first_wall_size_x" value="$(arg wall_size_x)"/>
-        <param name="first_wall_size_y" value="$(arg wall_size_y)"/>
-        <param name="second_wall_x" value="$(arg second_wall_x)"/>
-        <param name="second_wall_y" value="$(arg wall_y)"/>
-        <param name="second_wall_size_x" value="$(arg second_wall_size_x)"/>
-        <param name="second_wall_total_size_y" value="$(arg second_wall_total_size_y)"/>
-        <param name="second_wall_gap_size_y" value="$(arg second_wall_gap_size_y)"/>
-        <param name="safety_distance" value="$(arg safety_distance)"/>
-        <param name="resolution" value="0.1"/>
-        <param name="height" value="3.0"/>
-        <param name="randomize" value="false"/>
-        <param name="random_seed" value="1"/>
-    </node>
+    <include file="$(find ego_planner)/launch/baseline_fixed_wall_map.launch" if="$(eval arg('map_source') == 'split_merge_wall')">
+        <arg name="safety_distance" value="$(arg safety_distance)"/>
+        <arg name="wall_x" value="$(arg wall_x)"/>
+        <arg name="wall_y" value="$(arg wall_y)"/>
+        <arg name="wall_size_x" value="$(arg wall_size_x)"/>
+        <arg name="wall_size_y" value="$(arg wall_size_y)"/>
+        <arg name="second_wall_x" value="$(arg second_wall_x)"/>
+        <arg name="second_wall_size_x" value="$(arg second_wall_size_x)"/>
+        <arg name="second_wall_total_size_y" value="$(arg second_wall_total_size_y)"/>
+        <arg name="second_wall_gap_size_y" value="$(arg second_wall_gap_size_y)"/>
+    </include>
     <include file="$(find ego_planner)/launch/baseline_8uav_member.launch">
         <arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="safety_distance" value="$(arg safety_distance)"/>

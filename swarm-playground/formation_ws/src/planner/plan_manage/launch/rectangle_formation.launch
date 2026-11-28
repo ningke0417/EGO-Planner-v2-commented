@@ -1,0 +1,95 @@
+<launch>
+    <!-- Shared entry: choose scene, rows and columns; all fleet sizes use the same assets. -->
+    <arg name="scene" default="fixed_wall" doc="fixed_wall, sparse_random or cluttered_random"/>
+    <arg name="formation_rows" default="2"/>
+    <arg name="formation_columns" default="4"/>
+    <arg name="row_spacing" default="1.0"/>
+    <arg name="column_spacing" default="1.0"/>
+    <arg name="altitude" default="1.5"/>
+    <arg name="rviz" default="true"/>
+    <arg name="max_vel" default="0.5"/>
+    <arg name="map_size_y" default="$(eval 18.0 if arg('scene') == 'cluttered_random' else 14.0)"/>
+    <arg name="map_size_z" default="3.0"/>
+    <arg name="odom_topic" default="visual_slam/odom"/>
+    <arg name="safety_distance" default="0.2"/>
+    <arg name="formation_weight" default="200.0"/>
+    <arg name="start_planning" default="true"/>
+    <arg name="full_360_sensing" default="true"/>
+    <arg name="record_bag" default="false"/>
+    <arg name="wall_x" default="-2.0"/>
+    <arg name="wall_y" default="0.0"/>
+    <arg name="wall_size_x" default="0.5"/>
+    <arg name="wall_size_y" default="6.0"/>
+    <arg name="second_wall_x" default="6.5"/>
+    <arg name="second_wall_size_x" default="0.5"/>
+    <arg name="second_wall_total_size_y" default="10.0"/>
+    <arg name="second_wall_gap_size_y" default="1.8"/>
+    <arg name="random_seed" default="17"/>
+    <arg name="small_position_seed" default="-1"/>
+    <arg name="large_obstacle_count" default="$(eval 0 if arg('scene') == 'cluttered_random' else 4)"/>
+    <arg name="small_obstacle_count" default="$(eval 60 if arg('scene') == 'cluttered_random' else 6)"/>
+    <arg name="small_size_min" default="0.45"/>
+    <arg name="small_size_max" default="$(eval 1.1 if arg('scene') == 'cluttered_random' else 0.9)"/>
+    <arg name="boundary_clearance" default="0.8"/>
+    <arg name="endpoint_clearance" default="$(eval 5.0 if arg('scene') == 'cluttered_random' else 3.0)"/>
+    <arg name="obstacle_separation" default="$(eval 0.6 if arg('scene') == 'cluttered_random' else 0.7)"/>
+    <arg name="goal_side_obstacle_size_y" default="4.0"/>
+    <arg name="goal_side_obstacle_center_y" default="0.0"/>
+    <arg name="large_longitudinal_separation" default="3.5"/>
+    <arg name="small_center_y_limit" default="$(eval 8.0 if arg('scene') == 'cluttered_random' else 2.0)"/>
+    <arg name="structured_challenge_enabled" default="$(eval arg('scene') != 'cluttered_random')"/>
+    <arg name="stacked_cluster_x" default="-2.0"/>
+    <arg name="narrow_gap_x" default="4.8"/>
+    <arg name="narrow_gap_size_y" default="1.6"/>
+    <arg name="map_size_x" default="$(eval 40.0 if arg('scene') == 'cluttered_random' else (32.0 if arg('scene') == 'sparse_random' else 24.0))"/>
+    <arg name="start_x" default="$(eval -17.0 if arg('scene') == 'cluttered_random' else (-14.0 if arg('scene') == 'sparse_random' else -6.0))"/>
+    <arg name="goal_x" default="$(eval 17.0 if arg('scene') == 'cluttered_random' else (14.0 if arg('scene') == 'sparse_random' else 10.0))"/>
+    <arg name="bag_prefix" default="/tmp/ego_rectangle_$(arg scene)"/>
+    <node pkg="ego_planner" type="launch_baseline_formation.py" name="baseline_formation_launcher" output="screen" required="true">
+        <param name="formation_rows" value="$(arg formation_rows)" type="int"/>
+        <param name="formation_columns" value="$(arg formation_columns)" type="int"/>
+        <param name="row_spacing" value="$(arg row_spacing)" type="double"/>
+        <param name="column_spacing" value="$(arg column_spacing)" type="double"/>
+        <param name="altitude" value="$(arg altitude)" type="double"/>
+        <param name="rviz" value="$(arg rviz)" type="bool"/>
+        <param name="max_vel" value="$(arg max_vel)" type="double"/>
+        <param name="map_size_y" value="$(arg map_size_y)" type="double"/>
+        <param name="map_size_z" value="$(arg map_size_z)" type="double"/>
+        <param name="odom_topic" value="$(arg odom_topic)" type="str"/>
+        <param name="safety_distance" value="$(arg safety_distance)" type="double"/>
+        <param name="formation_weight" value="$(arg formation_weight)" type="double"/>
+        <param name="start_planning" value="$(arg start_planning)" type="bool"/>
+        <param name="full_360_sensing" value="$(arg full_360_sensing)" type="bool"/>
+        <param name="record_bag" value="$(arg record_bag)" type="bool"/>
+        <param name="wall_x" value="$(arg wall_x)" type="double"/>
+        <param name="wall_y" value="$(arg wall_y)" type="double"/>
+        <param name="wall_size_x" value="$(arg wall_size_x)" type="double"/>
+        <param name="wall_size_y" value="$(arg wall_size_y)" type="double"/>
+        <param name="second_wall_x" value="$(arg second_wall_x)" type="double"/>
+        <param name="second_wall_size_x" value="$(arg second_wall_size_x)" type="double"/>
+        <param name="second_wall_total_size_y" value="$(arg second_wall_total_size_y)" type="double"/>
+        <param name="second_wall_gap_size_y" value="$(arg second_wall_gap_size_y)" type="double"/>
+        <param name="random_seed" value="$(arg random_seed)" type="int"/>
+        <param name="small_position_seed" value="$(arg small_position_seed)" type="int"/>
+        <param name="large_obstacle_count" value="$(arg large_obstacle_count)" type="int"/>
+        <param name="small_obstacle_count" value="$(arg small_obstacle_count)" type="int"/>
+        <param name="small_size_min" value="$(arg small_size_min)" type="double"/>
+        <param name="small_size_max" value="$(arg small_size_max)" type="double"/>
+        <param name="boundary_clearance" value="$(arg boundary_clearance)" type="double"/>
+        <param name="endpoint_clearance" value="$(arg endpoint_clearance)" type="double"/>
+        <param name="obstacle_separation" value="$(arg obstacle_separation)" type="double"/>
+        <param name="goal_side_obstacle_size_y" value="$(arg goal_side_obstacle_size_y)" type="double"/>
+        <param name="goal_side_obstacle_center_y" value="$(arg goal_side_obstacle_center_y)" type="double"/>
+        <param name="large_longitudinal_separation" value="$(arg large_longitudinal_separation)" type="double"/>
+        <param name="small_center_y_limit" value="$(arg small_center_y_limit)" type="double"/>
+        <param name="structured_challenge_enabled" value="$(arg structured_challenge_enabled)" type="bool"/>
+        <param name="stacked_cluster_x" value="$(arg stacked_cluster_x)" type="double"/>
+        <param name="narrow_gap_x" value="$(arg narrow_gap_x)" type="double"/>
+        <param name="narrow_gap_size_y" value="$(arg narrow_gap_size_y)" type="double"/>
+        <param name="scene" value="$(arg scene)" type="str"/>
+        <param name="map_size_x" value="$(arg map_size_x)" type="double"/>
+        <param name="start_x" value="$(arg start_x)" type="double"/>
+        <param name="goal_x" value="$(arg goal_x)" type="double"/>
+        <param name="bag_prefix" value="$(arg bag_prefix)" type="str"/>
+    </node>
+</launch>

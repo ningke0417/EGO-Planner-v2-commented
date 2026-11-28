@@ -1,7 +1,67 @@
 # EGO-Planner-v2
 
-当前工作分支在官方 `9d85475` 基础上提供与判据验证项目一致的八机固定墙和随机障碍物场景。
+当前工作分支在官方 `9d85475` 基础上提供与判据验证项目一致的固定墙和随机障碍物场景，
+包含稀疏随机障碍和密集随机方柱，支持 6、8、12、16 机矩形编队。
 编译、运行及对比边界见 [八机原版对照说明](docs/original_8uav_baseline.md)。
+
+## 可复用矩形编队：6 / 12 / 16 机
+
+统一使用 `rectangle_formation.launch`，通过行列参数选择规模，默认打开 RViz。
+场景、感知和无人机模型与判据验证项目共用相同实现条件。
+行沿飞行方向 x 从前向后排列，列沿 y 排列，相邻间距默认均为 1 m。
+
+```zsh
+cd ~/Codes/EGO-Planner-v2-commented/swarm-playground/formation_ws
+source /opt/ros/noetic/setup.zsh
+source devel/original_baseline/setup.zsh
+```
+
+固定墙（下面三条命令分别运行）：
+
+```zsh
+# 两行三列：6 机
+roslaunch ego_planner rectangle_formation.launch scene:=fixed_wall formation_rows:=2 formation_columns:=3
+# 三行四列：12 机
+roslaunch ego_planner rectangle_formation.launch scene:=fixed_wall formation_rows:=3 formation_columns:=4
+# 四行四列：16 机
+roslaunch ego_planner rectangle_formation.launch scene:=fixed_wall formation_rows:=4 formation_columns:=4
+```
+
+随机障碍物（下面三条命令分别运行）：
+
+```zsh
+roslaunch ego_planner rectangle_formation.launch scene:=sparse_random formation_rows:=2 formation_columns:=3
+roslaunch ego_planner rectangle_formation.launch scene:=sparse_random formation_rows:=3 formation_columns:=4
+roslaunch ego_planner rectangle_formation.launch scene:=sparse_random formation_rows:=4 formation_columns:=4
+```
+
+新入口的固定墙默认宽 6 m，与参考项目的 `distributed_fixed_wall.launch` 一致；
+原八机入口仍保留 4 m 默认值。随机地图默认种子为 17、6 个小障碍物；
+各规模使用同一地图，修改编队规模不会重新选种子或放大障碍物。
+编译、间距调整、静态预览及验证命令见 [矩形编队说明](docs/rectangular_formations.md)。
+
+## 与判据验证项目一致的密集随机方柱
+
+对应参考项目的 `distributed_cluttered_random.launch`。地图为 40×18×3 m，
+默认种子 17、60 根方柱，横截面两个边长均在 0.45–1.1 m 范围内；
+编队中心起终点为 x=-17/17 m，两端各留出 5 m 障碍物净空，柱间最小几何间隔 0.6 m。
+
+在已加载上述环境的终端中，下面命令分别运行：
+
+```zsh
+# 六机
+roslaunch ego_planner rectangle_formation.launch scene:=cluttered_random formation_rows:=2 formation_columns:=3
+# 八机
+roslaunch ego_planner rectangle_formation.launch scene:=cluttered_random formation_rows:=2 formation_columns:=4
+# 十二机
+roslaunch ego_planner rectangle_formation.launch scene:=cluttered_random formation_rows:=3 formation_columns:=4
+# 十六机
+roslaunch ego_planner rectangle_formation.launch scene:=cluttered_random formation_rows:=4 formation_columns:=4
+```
+
+默认打开 RViz。`random_seed`、`small_obstacle_count`、`small_size_min`、`small_size_max`
+和 `obstacle_separation` 可调整布局、数量、尺寸及间隔；相同参数下各规模共用相同地图。
+该场景关闭大型长障碍、堆叠块和强制窄通道，规划仍使用本项目的官方 EGO 编队规划器。
 
 Swarm Playground, the codebase of the paper "[Swarm of micro flying robots in the wild](https://www.science.org/doi/10.1126/scirobotics.abm5954)".
 

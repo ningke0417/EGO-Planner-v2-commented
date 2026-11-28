@@ -1,0 +1,153 @@
+{
+  "date": "2026-11-22",
+  "scope": "Configuration, startup and 12 s planning/execution checks; no complete-mission success or collision-rate claim.",
+  "source_head_before_changes": "5d398e64a84a01bd1018034c6e4f48805941c909",
+  "reference_head": "fee3e464f9f435605b3ce1206449319319d0d196",
+  "shared_asset_sha256": {
+    "uav_simulator/map_generator/src/fixed_split_merge_wall_map.cpp": "7ba16a3e098b958d5e9cc24b120d29bf17492d97f4130f48f1ba7f7b15dad4f1",
+    "uav_simulator/map_generator/src/sparse_random_obstacle_map.cpp": "93e8cd33cfd0d63c15f92a753c2afd517563427a7cac0185436bf3c2a9eacec2",
+    "Utils/odom_visualization/src/odom_visualization.cpp": "34d58c4acee7162dbca2416ab357894d2c12eb6d1380c0d8bc0ff332aedbe060",
+    "Utils/odom_visualization/meshes/fake_drone.dae": "5281d0ca1badcc723a485a9de84952cecc8b5ec1e033098abbd560aac5c7392a"
+  },
+  "configuration": {
+    "official_files_unchanged": 63,
+    "legacy_cases": 4,
+    "reference_cases": [
+      {
+        "scene": "fixed_wall",
+        "rows": 2,
+        "columns": 3,
+        "environment_parameters_matched": 164
+      },
+      {
+        "scene": "fixed_wall",
+        "rows": 3,
+        "columns": 4,
+        "environment_parameters_matched": 314
+      },
+      {
+        "scene": "fixed_wall",
+        "rows": 4,
+        "columns": 4,
+        "environment_parameters_matched": 414
+      },
+      {
+        "scene": "sparse_random",
+        "rows": 2,
+        "columns": 3,
+        "environment_parameters_matched": 182
+      },
+      {
+        "scene": "sparse_random",
+        "rows": 3,
+        "columns": 4,
+        "environment_parameters_matched": 332
+      },
+      {
+        "scene": "sparse_random",
+        "rows": 4,
+        "columns": 4,
+        "environment_parameters_matched": 432
+      }
+    ]
+  },
+  "rviz_reference_colors_matched": 16,
+  "cases": [
+    {
+      "scene": "wall",
+      "rows": 2,
+      "columns": 3,
+      "num_uavs": 6,
+      "planning_seconds": 12.0,
+      "map_points": 27840,
+      "map_data_sha256": "3832ebf2ab6e6bd8bf0ef95c157e696453e0489bd88f6a6c4fa2c544a02f5264",
+      "local_scans": 6,
+      "robot_markers": 6,
+      "min_trajectory_messages": 13,
+      "invalid_trajectory_messages": 0,
+      "min_displacement_m": 3.0621933538078796,
+      "max_displacement_m": 3.8336426573292273,
+      "rviz_running": false
+    },
+    {
+      "scene": "wall",
+      "rows": 3,
+      "columns": 4,
+      "num_uavs": 12,
+      "planning_seconds": 12.0,
+      "map_points": 27840,
+      "map_data_sha256": "3832ebf2ab6e6bd8bf0ef95c157e696453e0489bd88f6a6c4fa2c544a02f5264",
+      "local_scans": 12,
+      "robot_markers": 12,
+      "min_trajectory_messages": 12,
+      "invalid_trajectory_messages": 0,
+      "min_displacement_m": 2.724527503056031,
+      "max_displacement_m": 4.432146172155184,
+      "rviz_running": false
+    },
+    {
+      "scene": "wall",
+      "rows": 4,
+      "columns": 4,
+      "num_uavs": 16,
+      "planning_seconds": 12.0,
+      "map_points": 27840,
+      "map_data_sha256": "3832ebf2ab6e6bd8bf0ef95c157e696453e0489bd88f6a6c4fa2c544a02f5264",
+      "local_scans": 16,
+      "robot_markers": 16,
+      "min_trajectory_messages": 11,
+      "invalid_trajectory_messages": 0,
+      "min_displacement_m": 2.503790905847556,
+      "max_displacement_m": 4.064812713465293,
+      "rviz_running": false
+    },
+    {
+      "scene": "random",
+      "rows": 2,
+      "columns": 3,
+      "num_uavs": 6,
+      "planning_seconds": 12.0,
+      "map_points": 102368,
+      "map_data_sha256": "13ffaa0d9e914676cc1ba77a7610fcbfecbd7c131f45d58e6dabea9161061360",
+      "local_scans": 6,
+      "robot_markers": 6,
+      "min_trajectory_messages": 11,
+      "invalid_trajectory_messages": 0,
+      "min_displacement_m": 3.2404665773914356,
+      "max_displacement_m": 4.4504857681815055,
+      "rviz_running": false
+    },
+    {
+      "scene": "random",
+      "rows": 3,
+      "columns": 4,
+      "num_uavs": 12,
+      "planning_seconds": 12.0,
+      "map_points": 102368,
+      "map_data_sha256": "13ffaa0d9e914676cc1ba77a7610fcbfecbd7c131f45d58e6dabea9161061360",
+      "local_scans": 12,
+      "robot_markers": 12,
+      "min_trajectory_messages": 10,
+      "invalid_trajectory_messages": 0,
+      "min_displacement_m": 3.5742532017829673,
+      "max_displacement_m": 4.366667843234577,
+      "rviz_running": false
+    },
+    {
+      "scene": "random",
+      "rows": 4,
+      "columns": 4,
+      "num_uavs": 16,
+      "planning_seconds": 12.0,
+      "map_points": 102368,
+      "map_data_sha256": "13ffaa0d9e914676cc1ba77a7610fcbfecbd7c131f45d58e6dabea9161061360",
+      "local_scans": 16,
+      "robot_markers": 16,
+      "min_trajectory_messages": 9,
+      "invalid_trajectory_messages": 0,
+      "min_displacement_m": 2.592609935688609,
+      "max_displacement_m": 3.646899252288523,
+      "rviz_running": true
+    }
+  ]
+}

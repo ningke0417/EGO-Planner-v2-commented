@@ -17,7 +17,7 @@
         <remap from="~odometry" to="drone_$(arg drone_id)_$(arg odometry_topic)"/>
     </node>
     <node pkg="odom_visualization" name="drone_$(arg drone_id)_odom_visualization" type="odom_visualization" output="screen">
-        <remap from="~odom" to="drone_$(arg drone_id)_visual_slam/odom"/>
+        <remap from="~odom" to="drone_$(arg drone_id)_$(arg odometry_topic)"/>
         <param name="color/a" value="1.0"/>
         <param name="color/r" value="0.0"/>
         <param name="color/g" value="0.0"/>

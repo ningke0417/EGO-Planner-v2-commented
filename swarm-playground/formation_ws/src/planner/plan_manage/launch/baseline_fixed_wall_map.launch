@@ -1,0 +1,30 @@
+<launch>
+    <!-- Shared physical map for legacy eight-UAV and configurable rectangle scenes. -->
+    <arg name="safety_distance" default="0.2"/>
+    <arg name="wall_x" default="-2.0"/>
+    <arg name="wall_y" default="0.0"/>
+    <arg name="wall_size_x" default="0.5"/>
+    <arg name="wall_size_y" default="4.0"/>
+    <arg name="second_wall_x" default="6.5"/>
+    <arg name="second_wall_size_x" default="0.5"/>
+    <arg name="second_wall_total_size_y" default="10.0"/>
+    <arg name="second_wall_gap_size_y" default="1.8"/>
+    <arg name="map_size_z" default="3.0"/>
+    <node pkg="map_generator" type="fixed_split_merge_wall_map" name="fixed_split_merge_wall_map" output="screen" required="true">
+        <remap from="global_cloud" to="/map_generator/global_cloud"/>
+        <param name="first_wall_x" value="$(arg wall_x)"/>
+        <param name="first_wall_y" value="$(arg wall_y)"/>
+        <param name="first_wall_size_x" value="$(arg wall_size_x)"/>
+        <param name="first_wall_size_y" value="$(arg wall_size_y)"/>
+        <param name="second_wall_x" value="$(arg second_wall_x)"/>
+        <param name="second_wall_y" value="$(arg wall_y)"/>
+        <param name="second_wall_size_x" value="$(arg second_wall_size_x)"/>
+        <param name="second_wall_total_size_y" value="$(arg second_wall_total_size_y)"/>
+        <param name="second_wall_gap_size_y" value="$(arg second_wall_gap_size_y)"/>
+        <param name="safety_distance" value="$(arg safety_distance)"/>
+        <param name="resolution" value="0.1"/>
+        <param name="height" value="$(arg map_size_z)"/>
+        <param name="randomize" value="false"/>
+        <param name="random_seed" value="1"/>
+    </node>
+</launch>

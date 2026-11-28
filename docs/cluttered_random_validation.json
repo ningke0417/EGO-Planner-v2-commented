@@ -1,0 +1,141 @@
+{
+  "date": "2026-11-28",
+  "reference_project": "/home/robot/Codes/EGO-Planner-criterion-validation",
+  "reference_entry": "distributed_cluttered_random.launch",
+  "baseline_entry": "rectangle_formation.launch scene:=cluttered_random",
+  "scope": "Identical physical scene, configuration and 12 s headless execution check; no complete-mission arrival or collision-rate result.",
+  "configuration_tests_passed": 8,
+  "formation_grids_compared": [
+    [
+      2,
+      3
+    ],
+    [
+      2,
+      4
+    ],
+    [
+      3,
+      4
+    ],
+    [
+      4,
+      4
+    ]
+  ],
+  "map_parameters": {
+    "seed": 17,
+    "small_position_seed": -1,
+    "large_obstacle_count": 0,
+    "small_obstacle_count": 60,
+    "map_size_y": 18.0,
+    "start_x": -17.0,
+    "goal_x": 17.0,
+    "endpoint_clearance": 5.0,
+    "boundary_clearance": 0.8,
+    "obstacle_separation": 0.6,
+    "large_longitudinal_separation": 3.5,
+    "small_center_y_limit": 8.0,
+    "structured_challenge_enabled": false,
+    "stacked_cluster_x": -2.0,
+    "stacked_cluster_y": -0.3,
+    "stacked_block_size": 1.2,
+    "stacked_block_step": 0.75,
+    "narrow_gap_x": 4.8,
+    "narrow_gap_size_y": 1.6,
+    "narrow_gap_wall_size_x": 0.8,
+    "narrow_gap_segment_size_y": 4.6,
+    "large_size_x_min": 0.6,
+    "large_size_x_max": 1.2,
+    "large_size_y_min": 2.5,
+    "large_size_y_max": 4.5,
+    "goal_side_large_size_y_max": 4.0,
+    "center_goal_side_large": true,
+    "goal_side_large_center_y": 0.0,
+    "small_size_min": 0.45,
+    "small_size_max": 1.1,
+    "resolution": 0.1,
+    "height": 3.0
+  },
+  "map_source_sha256": "93e8cd33cfd0d63c15f92a753c2afd517563427a7cac0185436bf3c2a9eacec2",
+  "map_binary_sha256_baseline_reference": [
+    "88c0d028fceaa612016a49f84d228d2bec70c8a7494dd9648041919ce2cf554c",
+    "f081bdfcb82a8307065a5e8c79755939cdceea1839c5a7b4ed08e2ed4f6faee0"
+  ],
+  "same_parameters_geometry_and_cloud_bytes": true,
+  "endpoint_clearance_and_pairwise_separation_checked": true,
+  "obstacle_count": 60,
+  "geometry_sha256": "d63b7c96d7b123949a5f58bb6ed219be732ede22bccd8434bfbf9159b5f6ffa1",
+  "pointcloud_data_sha256": "e68764f1cd20cb516ce7de852363e2d34567664f272ae33744db0f8254d54bcf",
+  "points": 157152,
+  "smoke": {
+    "formation_rows": 4,
+    "formation_columns": 4,
+    "num_uavs": 16,
+    "planning_seconds": 12.0,
+    "rviz": false,
+    "local_scans_received": 16,
+    "robot_markers_received": 16,
+    "mesh_resource": "package://odom_visualization/meshes/fake_drone.dae",
+    "robot_scale": 0.35,
+    "trajectory_counts": [
+      12,
+      12,
+      11,
+      11,
+      12,
+      10,
+      11,
+      11,
+      16,
+      10,
+      10,
+      10,
+      12,
+      11,
+      10,
+      10
+    ],
+    "nonfinite_trajectory_counts": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "displacements": [
+      4.09579951098777,
+      4.037970191424092,
+      4.073878946006301,
+      4.048921856542102,
+      4.035716187014462,
+      4.062006479408184,
+      4.078879666951975,
+      4.029928218404514,
+      4.012742905650697,
+      4.055957246662144,
+      4.024208429785565,
+      4.038164182611587,
+      4.055631221425646,
+      4.053871643621937,
+      4.042887976518205,
+      4.04361968656989
+    ]
+  },
+  "shutdown_note": "After the completed checks and SIGINT cleanup, C++ nodes emitted boost mutex lock errors; no process-death events were recorded before shutdown.",
+  "raw_reports": [
+    "/tmp/ego-cluttered-validation-kukc0wxj/map_comparison.json",
+    "/tmp/ego-cluttered-16-smoke.json"
+  ]
+}
